@@ -1,7 +1,7 @@
 {
   "$generatedBy": "scripts/generateConfigDocs.js",
   "source": "app/config/options.js",
-  "optionCount": 74,
+  "optionCount": 75,
   "options": [
     {
       "name": "appActiveCheckInterval",
@@ -1038,6 +1038,37 @@
           "type": "boolean",
           "default": false,
           "description": "Enable the Microsoft Graph API integration for calendar and mail access."
+        }
+      ]
+    },
+    {
+      "name": "mcp",
+      "type": "object",
+      "default": {
+        "enabled": false,
+        "port": 3040,
+        "authToken": ""
+      },
+      "description": "Local read-only MCP (Model Context Protocol) server exposing Teams chats and Outlook mail to AI assistants such as Claude Code. Requires graphApi.enabled. Listens on 127.0.0.1 only.",
+      "applyMode": "restart",
+      "fields": [
+        {
+          "path": "enabled",
+          "type": "boolean",
+          "default": false,
+          "description": "Start the MCP server when the app starts. Has no effect unless graphApi.enabled is also true."
+        },
+        {
+          "path": "port",
+          "type": "number",
+          "default": 3040,
+          "description": "Localhost TCP port for the Streamable HTTP endpoint (http://127.0.0.1:<port>/mcp)."
+        },
+        {
+          "path": "authToken",
+          "type": "string",
+          "default": "",
+          "description": "Optional bearer token clients must send in the Authorization header. Empty disables the check."
         }
       ]
     },

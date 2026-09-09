@@ -16,6 +16,9 @@ const MQTTMediaStatusService = require("./mqtt/mediaStatusService");
 const HomeAssistantDiscovery = require("./mqtt/homeAssistantDiscovery");
 const GraphApiClient = require("./graphApi");
 const { registerGraphApiHandlers } = require("./graphApi/ipcHandlers");
+const { McpService } = require("./mcp");
+const ChatServiceClient = require("./chatService");
+const { TranscriptClient } = require("./chatService/transcripts");
 const { allowedChannels } = require("./security/ipcValidator");
 const { installIpcSecurity } = require("./security/ipcSecurity");
 const { sanitize: sanitizePii } = require("./utils/logSanitizer");
@@ -112,6 +115,8 @@ let mqttClient = null;
 let mqttMediaStatusService = null;
 let haDiscovery = null;
 let graphApiClient = null;
+let mcpService = null;
+let chatServiceClient = null;
 let quickChatManager = null;
 
 const { createPlayer } = require("./audio/player");
@@ -204,6 +209,9 @@ if (gotTheLock) {
     console.debug("will-quit");
     if (mqttClient) {
       await mqttClient.disconnect();
+    }
+    if (mcpService) {
+      await mcpService.shutdown();
     }
   });
   app.on("certificate-error", handleCertificateError);
@@ -614,6 +622,19 @@ function initializeGraphApiClient() {
   }
 }
 
+function initializeMcpService() {
+  if (!config.mcp?.enabled) return;
+
+  chatServiceClient = new ChatServiceClient(config);
+  chatServiceClient.initialize(mainAppWindow.getWindow());
+  const transcriptClient = new TranscriptClient({ graphApiClient, chatServiceClient });
+  transcriptClient.initialize(mainAppWindow.getWindow());
+  mcpService = new McpService(config);
+  mcpService.initialize(graphApiClient, chatServiceClient, transcriptClient).catch((error) => {
+    console.error("[MCP] Failed to start MCP server", { message: error.message });
+  });
+}
+
 function initializeQuickChat() {
   const mainWindow = mainAppWindow.getWindow();
   if (!mainWindow) return;
@@ -726,6 +747,7 @@ async function handleAppReady() {
 
     initializeGraphApiClient();
     registerGraphApiHandlers(ipcMain, graphApiClient);
+    initializeMcpService();
     initializeQuickChat();
     registerGlobalShortcuts(config, mainAppWindow, app);
     initializeAutoUpdater();

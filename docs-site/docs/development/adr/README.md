@@ -2,7 +2,7 @@
 title: "Architecture Decision Records"
 sidebar_position: 1
 type: reference
-last_updated: 2026-09-05
+last_updated: 2026-09-08
 tags: [adr, architecture, decisions]
 ---
 
@@ -53,6 +53,7 @@ Architecture Decision Records capture important architectural decisions along wi
 | [029](029-config-schema-single-source-of-truth.md) | Configuration Schema as Single Source of Truth | ✅ Accepted | 2026-09-05 | v2.12.0+ |
 | [030](030-graph-api-teams-session-token.md) | Graph API Access via the Teams Session Token | ✅ Implemented | 2025-11-21 | v2.6.17 |
 | [031](031-ozone-platform-x11-default.md) | Keep the `--ozone-platform=x11` Default on Wayland | ✅ Accepted | 2026-09-05 | N/A |
+| [032](032-mcp-server.md) | Local Read-Only MCP Server | ✅ Accepted | 2026-09-08 | N/A |
 
 **Legend:**
 - ✅ **Implemented** - Decision accepted and code in production

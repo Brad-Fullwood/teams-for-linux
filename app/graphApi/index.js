@@ -128,6 +128,10 @@ class GraphApiClient {
         clearTimeout(timeout);
       }
 
+      if (options.raw && response.ok) {
+        return { success: true, data: Buffer.from(await response.arrayBuffer()) };
+      }
+
       const responseText = await response.text();
 
       let data = null;
@@ -273,6 +277,33 @@ class GraphApiClient {
     const endpoint = queryString ? `/me/messages?${queryString}` : '/me/messages';
 
     return await this.makeRequest(endpoint);
+  }
+
+  /** Get a single mail message by ID */
+  async getMailMessage(messageId, options = {}) {
+    logger.debug('[GRAPH_API] Getting mail message');
+
+    const queryString = this._buildODataQuery(options);
+    const path = `/me/messages/${encodeURIComponent(messageId)}`;
+    return await this.makeRequest(queryString ? `${path}?${queryString}` : path);
+  }
+
+  /** Get messages in a mail folder (inbox, sentitems, drafts, or a folder ID) */
+  async getMailFolderMessages(folderId = 'inbox', options = {}) {
+    logger.debug('[GRAPH_API] Getting mail folder messages');
+
+    const queryString = this._buildODataQuery(options);
+    const path = `/me/mailFolders/${encodeURIComponent(folderId)}/messages`;
+    return await this.makeRequest(queryString ? `${path}?${queryString}` : path);
+  }
+
+  /** List attachments on a mail message (metadata only unless select includes contentBytes) */
+  async getMailAttachments(messageId, options = {}) {
+    logger.debug('[GRAPH_API] Getting mail attachments');
+
+    const queryString = this._buildODataQuery(options);
+    const path = `/me/messages/${encodeURIComponent(messageId)}/attachments`;
+    return await this.makeRequest(queryString ? `${path}?${queryString}` : path);
   }
 
   /**

@@ -937,6 +937,31 @@ module.exports = {
         },
         applyMode: "restart",
       },
+      mcp: {
+        default: {
+          enabled: false,
+          port: 3040,
+          authToken: "",
+        },
+        describe:
+          "Local read-only MCP (Model Context Protocol) server exposing Teams chats and Outlook mail to AI assistants such as Claude Code. Requires graphApi.enabled. Listens on 127.0.0.1 only.",
+        type: "object",
+        fields: {
+          "enabled": {
+            type: "boolean",
+            describe: "Start the MCP server when the app starts. Has no effect unless graphApi.enabled is also true.",
+          },
+          "port": {
+            type: "number",
+            describe: "Localhost TCP port for the Streamable HTTP endpoint (http://127.0.0.1:<port>/mcp).",
+          },
+          "authToken": {
+            type: "string",
+            describe: "Optional bearer token clients must send in the Authorization header. Empty disables the check.",
+          },
+        },
+        applyMode: "restart",
+      },
       auth: {
         default: {
           intune: {
