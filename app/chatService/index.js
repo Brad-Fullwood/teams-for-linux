@@ -201,6 +201,37 @@ class ChatServiceClient {
     return await this.get(`/v1/users/ME/conversations/${encodeURIComponent(conversationId)}/messages`, params);
   }
 
+  /** Download inline Teams media without exposing the session credential. */
+  async getImage(sourceUrl) {
+    let url;
+    try { url = new URL(sourceUrl); } catch { return { success: false, error: 'Invalid image URL' }; }
+    if (url.protocol !== 'https:' || url.username || url.password || url.port ||
+        !/^(?:[a-z0-9-]+\.)*asm\.skype\.com$/i.test(url.hostname) || !url.pathname.startsWith('/v1/objects/')) {
+      return { success: false, error: 'Only Teams inline image URLs on asm.skype.com are supported' };
+    }
+    if (!this.enabled) return { success: false, error: 'Graph API is disabled' };
+    const session = await this.acquireSession();
+    if (!session.success) return session;
+    try {
+      const response = await fetch(url.href, {
+        method: 'GET', redirect: 'error', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        headers: { Authorization: `skype_token ${this.#skypeToken}`, Accept: 'image/*' },
+      });
+      if (!response.ok) return { success: false, error: `Image request failed: HTTP ${response.status}` };
+      const mimeType = response.headers.get('content-type')?.split(';')[0];
+      if (!['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(mimeType)) return { success: false, error: 'Response is not a supported image' };
+      const limit = 25 * 1024 * 1024;
+      if (Number(response.headers.get('content-length')) > limit) return { success: false, error: 'Image exceeds 25 MB limit' };
+      const chunks = []; let size = 0;
+      for await (const chunk of response.body) {
+        size += chunk.length;
+        if (size > limit) return { success: false, error: 'Image exceeds 25 MB limit' };
+        chunks.push(Buffer.from(chunk));
+      }
+      return { success: true, mimeType, data: Buffer.concat(chunks) };
+    } catch (error) { return { success: false, error: error.message }; }
+  }
+
   /**
    * All teams the user belongs to with every channel (followed or not), from the
    * chat aggregator directory the Teams client loads at startup. Read-only.

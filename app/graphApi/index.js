@@ -101,7 +101,7 @@ class GraphApiClient {
       const url = endpoint.startsWith('http') ? endpoint : `${this.baseUrl}${endpoint}`;
       const method = options.method || 'GET';
 
-      logger.debug('[GRAPH_API] Making request', { method, endpoint: url });
+      logger.debug('[GRAPH_API] Making request', { method, endpoint: options.sensitive ? '[private file request]' : url });
 
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 30000);
@@ -120,7 +120,7 @@ class GraphApiClient {
         });
       } catch (error) {
         if (error.name === 'AbortError') {
-          logger.error('[GRAPH_API] Request timed out', { endpoint: url });
+          logger.error('[GRAPH_API] Request timed out', { endpoint: options.sensitive ? '[private file request]' : url });
           return { success: false, error: 'Request timed out' };
         }
         throw error;
@@ -142,8 +142,8 @@ class GraphApiClient {
           // Intentionally catch - continue with null data for non-JSON responses (e.g., 204 No Content)
           logger.warn('[GRAPH_API] Failed to parse response as JSON', {
             status: response.status,
-            textPreview: responseText.substring(0, 100),
-            parseError: parseError.message
+            textPreview: options.sensitive ? '[redacted]' : responseText.substring(0, 100),
+            parseError: options.sensitive ? '[redacted]' : parseError.message
           });
         }
       }
@@ -151,13 +151,13 @@ class GraphApiClient {
       if (response.ok) {
         logger.debug('[GRAPH_API] Request successful', {
           status: response.status,
-          endpoint: url
+          endpoint: options.sensitive ? '[private file request]' : url
         });
         return { success: true, data };
       } else {
         logger.warn('[GRAPH_API] Request failed', {
           status: response.status,
-          error: data?.error
+          error: options.sensitive ? data?.error?.code : data?.error
         });
         return {
           success: false,
@@ -168,7 +168,7 @@ class GraphApiClient {
       }
 
     } catch (error) {
-      logger.error('[GRAPH_API] Request error:', error);
+      logger.error('[GRAPH_API] Request error:', options.sensitive ? { name: error.name } : error);
       return {
         success: false,
         error: error.message || error.toString()

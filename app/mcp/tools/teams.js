@@ -1,6 +1,9 @@
 const { z } = require('zod');
 const { htmlToText, truncate, formatDate, isoDaysAgo, toolResult } = require('./format');
 const { formatTranscript } = require('../../chatService/transcripts');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
 
 // Conversation kinds worth showing. Streams (mentions, call logs, notifications, drafts) are noise.
 const KINDS = {
@@ -140,7 +143,7 @@ function messageText(message) {
     return `[${MEDIA_LABELS[type]}${title ? `: ${title}` : ''}${link ? ` ${link}` : ''}]`;
   }
   if (type === 'Text' || type === 'RichText') return String(message.content ?? '');
-  return htmlToText(message.content);
+  return htmlToText(extractQuote(message.content).html);
 }
 
 function attachmentNames(message) {
@@ -156,11 +159,206 @@ function attachmentNames(message) {
   }
 }
 
-function renderChatMessage(m) {
+// --- Reactions (message.properties.emotions) -------------------------------------
+
+/** Parse a message's reactions defensively: JSON string or array, tolerant of missing/unknown fields. */
+function parseEmotions(message) {
+  let raw = message?.properties?.emotions;
+  if (!raw) return [];
+  if (typeof raw === 'string') {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((e) => e && typeof e === 'object' && e.key)
+    .map((e) => ({ key: String(e.key), users: Array.isArray(e.users) ? e.users : [] }));
+}
+
+/**
+ * Resolve reaction MRIs to display names via the same Graph /users/{id} lookup used
+ * for 1:1 chat naming, sharing its cache. Bounded so a page of messages stays fast.
+ */
+async function resolveReactionNames(messages, graph, maxLookups = 50) {
+  if (!graph) return;
+  let lookups = 0;
+  for (const m of messages ?? []) {
+    for (const emotion of parseEmotions(m)) {
+      for (const user of emotion.users) {
+        const oid = oidFromMri(user?.mri);
+        if (!oid || nameCache.has(oid)) continue;
+        if (lookups >= maxLookups) return;
+        lookups += 1;
+        const resolved = await graph.makeRequest(`/users/${encodeURIComponent(oid)}?$select=displayName`);
+        nameCache.set(oid, resolved.success && resolved.data?.displayName ? resolved.data.displayName : null);
+      }
+    }
+  }
+}
+
+function reactionsLine(message) {
+  const emotions = parseEmotions(message);
+  const parts = [];
+  for (const emotion of emotions) {
+    if (!emotion.users.length) continue;
+    const names = emotion.users
+      .map((u) => { const oid = oidFromMri(u?.mri); return oid ? nameCache.get(oid) : null; })
+      .filter(Boolean);
+    parts.push(`${emotion.key}×${emotion.users.length}${names.length ? ` (${names.join(', ')})` : ''}`);
+  }
+  return parts.length ? `  reactions: ${parts.join('; ')}` : null;
+}
+
+// --- Adaptive / rich cards (message.properties.cards, message.attachments) -------
+
+/** Root node whose children hold the visible card content, whatever shape it was wrapped in. */
+function cardRoot(card) {
+  if (card?.content?.body) return card.content.body;
+  if (card?.body) return card.body;
+  if (card?.content) return card.content;
+  return card;
+}
+
+/** Recursively collect visible text from adaptive-card-shaped JSON, skipping images and bare URLs. */
+function extractCardText(node, out, depth = 0) {
+  if (!node || typeof node !== 'object' || depth > 12) return;
+  if (Array.isArray(node)) {
+    for (const item of node) extractCardText(item, out, depth + 1);
+    return;
+  }
+  const type = node.type;
+  if (type === 'Image') return;
+  if (type === 'TextBlock') {
+    if (typeof node.text === 'string' && node.text.trim()) out.push(node.text.trim());
+    return;
+  }
+  if (type === 'RichTextBlock') {
+    const parts = (Array.isArray(node.inlines) ? node.inlines : [])
+      .map((i) => (typeof i === 'string' ? i : i?.text))
+      .filter(Boolean);
+    if (parts.length) out.push(parts.join(''));
+    return;
+  }
+  if (type === 'FactSet') {
+    for (const fact of Array.isArray(node.facts) ? node.facts : []) {
+      const line = `${fact?.title ?? ''}: ${fact?.value ?? ''}`.trim();
+      if (line && line !== ':') out.push(line);
+    }
+    return;
+  }
+  // Container/ColumnSet/Column and anything else that might nest content: walk known child arrays.
+  for (const key of ['items', 'columns', 'body']) {
+    if (Array.isArray(node[key])) extractCardText(node[key], out, depth + 1);
+  }
+}
+
+/** Gather card-shaped JSON from properties.cards (string or array) and any message.attachments. */
+function collectCardSources(message) {
+  const sources = [];
+  let raw = message?.properties?.cards;
+  if (raw) {
+    if (typeof raw === 'string') {
+      try {
+        raw = JSON.parse(raw);
+      } catch {
+        raw = null;
+      }
+    }
+    for (const c of Array.isArray(raw) ? raw : (raw ? [raw] : [])) {
+      if (typeof c === 'string') {
+        try { sources.push(JSON.parse(c)); } catch { /* not JSON, skip */ }
+      } else if (c && typeof c === 'object') {
+        sources.push(c);
+      }
+    }
+  }
+  for (const attachment of Array.isArray(message?.attachments) ? message.attachments : []) {
+    if (attachment?.content) sources.push(attachment.content);
+  }
+  return sources;
+}
+
+function cardText(message, maxChars) {
+  const out = [];
+  for (const card of collectCardSources(message)) extractCardText(cardRoot(card), out);
+  const joined = out.join(' | ').replaceAll(/\s+/g, ' ').trim();
+  return joined ? truncate(joined, maxChars) : null;
+}
+
+// --- Quoted replies (schema.skype.com/Reply blockquote in HTML content) ---------
+
+const QUOTE_RE = /<blockquote\b[^>]*itemtype="http:\/\/schema\.skype\.com\/Reply"[^>]*>([\s\S]*?)<\/blockquote>/i;
+
+/** Strip an inline quoted-reply blockquote out of Teams HTML and return its parts. */
+function extractQuote(html) {
+  const str = String(html ?? '');
+  const match = str.match(QUOTE_RE);
+  if (!match) return { html: str, quote: null };
+  const block = match[1];
+  const authorRaw = block.match(/<strong\b[^>]*itemprop="mri"[^>]*>([\s\S]*?)<\/strong>/i)?.[1];
+  const timeRaw = block.match(/<span\b[^>]*itemprop="time"[^>]*itemid="(\d+)"/i)?.[1];
+  const previewRaw = block.match(/<p\b[^>]*itemprop="preview"[^>]*>([\s\S]*?)<\/p>/i)?.[1];
+  const quote = {
+    author: authorRaw ? htmlToText(authorRaw).trim() || null : null,
+    time: timeRaw ? Number(timeRaw) : null,
+    preview: previewRaw ? htmlToText(previewRaw).trim() || null : null,
+  };
+  const stripped = str.slice(0, match.index) + str.slice(match.index + match[0].length);
+  return { html: stripped, quote };
+}
+
+function quoteLine(quote) {
+  if (!quote || (!quote.author && !quote.preview)) return null;
+  const author = quote.author || 'someone';
+  const time = Number.isFinite(quote.time) ? formatDate(new Date(quote.time).toISOString()) : null;
+  const preview = quote.preview ? `: ${quote.preview}` : '';
+  return `  > quoting ${author}${time ? ` (${time})` : ''}${preview}`;
+}
+
+// --- Channel threading (properties.rootMessageId / parentMessageId / conversationLink) ---
+
+/** The id of the message this one replies to, from whichever field carries it. */
+function threadRootId(message) {
+  const root = message?.properties?.rootMessageId ?? message?.rootMessageId ?? message?.parentMessageId;
+  if (root) return String(root);
+  const fromLink = String(message?.conversationLink ?? '').match(/;messageid=(\d+)/i)?.[1];
+  return fromLink ?? null;
+}
+
+/** Compact id for grouping replies in output; not a substitute for the real message id. */
+function shortId(id) {
+  const s = String(id ?? '');
+  return s.length > 8 ? s.slice(-8) : s;
+}
+
+/** Heuristic: standard/private channel thread ids end in @thread.tacv2 or @thread.skype. */
+function isChannelConversationId(chatId) {
+  return /@thread\.(tacv2|skype)$/i.test(String(chatId ?? ''));
+}
+
+function renderChatMessage(m, opts = {}) {
   rememberAuthor(m);
-  const lines = [`[${formatDate(m.composetime || m.originalarrivaltime)}] ${messageAuthor(m)}: ${truncate(messageText(m), 2000)}`];
+  const maxChars = opts.maxChars ?? 2000;
+  const isChannel = Boolean(opts.isChannel);
+  const rootId = threadRootId(m);
+  const isReply = Boolean(rootId) && rootId !== String(m.id ?? '');
+  const idTag = isChannel && !isReply && m.id ? `[id ${shortId(m.id)}] ` : '';
+  const threadTag = isReply ? ` (reply in thread ${shortId(rootId)})` : '';
+  const lines = [`[${formatDate(m.composetime || m.originalarrivaltime)}] ${idTag}${messageAuthor(m)}: ${truncate(messageText(m), maxChars)}${threadTag}`];
   const files = attachmentNames(m);
   if (files.length) lines.push(`  attachments: ${files.join(', ')}`);
+  const images = [...String(m.content ?? '').matchAll(/<img\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi)].map(match => match[1].replaceAll('&amp;', '&'));
+  for (const url of images) lines.push(`  image: ${url}`);
+  const card = cardText(m, maxChars);
+  if (card) lines.push(`  card: ${card}`);
+  const reactions = reactionsLine(m);
+  if (reactions) lines.push(reactions);
+  const quote = extractQuote(m.content).quote;
+  const quoted = quoteLine(quote);
+  if (quoted) lines.push(quoted);
   if (m.properties?.deletetime) lines.push('  (deleted)');
   return lines.join('\n');
 }
@@ -193,6 +391,20 @@ const kindsSchema = z.array(z.enum(['chat', 'meeting', 'channel', 'notes'])).def
  * @param {object} [transcripts] - TranscriptClient for meeting recordings
  */
 function registerTeamsTools(server, chat, graph, transcripts) {
+  server.registerTool('teams_download_image', {
+    title: 'Download a Teams message image',
+    description: 'Save an inline Teams image from an image URL returned by teams_get_chat_messages, using the existing Teams session. Read-only.',
+    inputSchema: { url: z.string().url(), saveDir: z.string().optional() },
+  }, async ({ url, saveDir }) => {
+    const result = await chat.getImage(url);
+    if (!result.success) return { isError: true, content: [{ type: 'text', text: result.error }] };
+    const dir = saveDir ? path.resolve(saveDir) : fs.mkdtempSync(path.join(os.tmpdir(), 'teams-image-'));
+    fs.mkdirSync(dir, { recursive: true });
+    const extension = result.mimeType === 'image/jpeg' ? 'jpg' : result.mimeType.split('/')[1];
+    const dest = path.join(dir, `teams-image-${Date.now()}.${extension}`);
+    fs.writeFileSync(dest, result.data, { flag: 'wx' });
+    return { content: [{ type: 'text', text: `Saved ${result.data.length} bytes: ${dest}` }] };
+  });
   server.registerTool('me', {
     title: 'Who am I',
     description: 'Display name, email and job title of the signed-in user.',
@@ -227,22 +439,26 @@ function registerTeamsTools(server, chat, graph, transcripts) {
 
   server.registerTool('teams_get_chat_messages', {
     title: 'Get conversation messages',
-    description: 'Messages in one chat, meeting chat or channel, oldest first. Use the id from teams_list_chats. For older history, pass back the "older: cursor" value from a previous call.',
+    description: 'Messages in one chat, meeting chat or channel, oldest first. Use the id from teams_list_chats. For older history, pass back the "older: cursor" value from a previous call. Shows reactions, quoted-reply context, adaptive/rich card text, and (in channels) thread linkage when present.',
     inputSchema: {
       chatId: z.string(),
       limit: z.number().int().min(1).max(200).default(30),
       sinceDays: z.number().int().min(1).max(3650).optional(),
       cursor: z.string().optional().describe('Continue into older messages from a previous result'),
+      maxChars: z.number().int().min(200).max(20_000).default(2000).describe('Maximum characters kept per message body'),
     },
-  }, async ({ chatId, limit, sinceDays, cursor }) => {
+  }, async ({ chatId, limit, sinceDays, cursor, maxChars }) => {
     // Member/topic/picture events share the feed with real messages; fetch extra so `limit` means content.
     const options = { pageSize: Math.min(limit * 2, 200), cursor };
     if (sinceDays) options.startTime = Date.now() - sinceDays * 86_400_000;
     const result = await chat.getMessages(chatId, options);
+    if (!result.success) return toolResult(result, () => '');
+    const messages = (result.data?.messages ?? []).filter(isContentMessage).slice(0, limit).reverse();
+    await resolveReactionNames(messages, graph);
+    const isChannel = isChannelConversationId(chatId);
     return toolResult(result, (data) => {
-      const messages = (data?.messages ?? []).filter(isContentMessage).slice(0, limit).reverse();
       const older = data?._metadata?.backwardLink;
-      const lines = messages.map(renderChatMessage);
+      const lines = messages.map((m) => renderChatMessage(m, { maxChars, isChannel }));
       if (older && (data?.messages ?? []).length > 0) lines.push(`older: cursor=${older}`);
       return lines.join('\n');
     });
@@ -376,4 +592,9 @@ function registerTeamsTools(server, chat, graph, transcripts) {
   });
 }
 
-module.exports = { registerTeamsTools, chatLabel, kindOf, isUnread, isContentMessage, messageAuthor, messageText, renderChatMessage, selectConversations, resolvePartnerNames, rememberAuthor, isoDaysAgo };
+module.exports = {
+  registerTeamsTools, chatLabel, kindOf, isUnread, isContentMessage, messageAuthor, messageText, renderChatMessage,
+  selectConversations, resolvePartnerNames, rememberAuthor, isoDaysAgo,
+  parseEmotions, resolveReactionNames, reactionsLine, cardText, extractCardText, extractQuote, quoteLine,
+  threadRootId, shortId, isChannelConversationId,
+};

@@ -90,3 +90,17 @@ Any MCP client that supports Streamable HTTP can connect the same way.
 - Binds to `127.0.0.1` only; there is no option to bind elsewhere.
 - Rejects requests whose `Origin` header is not `localhost`/`127.0.0.1` (browser-based DNS rebinding guard).
 - Read-only by construction; see `app/mcp/README.md` for the enforcement test.
+
+## Original files and folders
+
+`files_list_folder(url, limit, cursor)` lists immediate SharePoint or OneDrive folder children using the existing Teams session. Pass the returned cursor with the same folder URL for the next page.
+
+`files_download(url, saveDir)` saves original file bytes, including Word custom XML and content controls, without conversion. Files are limited to 25 MB. The default destination is a new temporary directory; existing files are never overwritten. `files_get_content` retains its text extraction behaviour. No browser login or additional authentication flow is introduced.
+
+## Project file discovery
+
+Project investigations must check **files as well as chats**. Start with `sites_search(query)` and `files_search(query)`, follow project-site links, enumerate `files_list_libraries(siteId)`, and use `files_search(query, siteId)` across every library, including **Delivery Documents**. Search CDD identifiers separately if a combined project/document query finds nothing. Read candidate documents with `files_get_content`; authoritative CDD requirements take precedence over background solution designs.
+
+All discovery uses the existing Teams authentication and Microsoft Graph GET endpoints: `/sites?search=`, `/sites/{id}/drives`, `/me/drive/search(q=...)`, `/drives/{id}/root/search(q=...)`, and `/drives/{id}/items/{id}/search(q=...)`. [Graph file search](https://learn.microsoft.com/en-us/graph/api/driveitem-search?view=graph-rest-1.0).
+
+Follow every returned cursor. Site search covers every enumerated library, not only the default drive. File-search cursors are opaque, expire after 30 minutes or application restart, and must be used with identical arguments. Results include names, URLs, locations, modification timestamps, explicit completion and access errors. Indexed search cannot prove absence: list the project folders if necessary. Denied scopes and interrupted pagination must be reported as incomplete. No query text, document content or sensitive request URLs are logged.

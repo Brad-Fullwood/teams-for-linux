@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { docxToText, xlsxBufferToText } = require('./files');
+const { validateNext } = require('./discovery');
 const { htmlToText, truncate, formatDate, isoDaysAgo, odataString, toolResult, personName, personAddress } = require('./format');
 
 const LIST_SELECT = 'id,subject,from,toRecipients,receivedDateTime,isRead,flag,bodyPreview,hasAttachments,importance,conversationId,webLink';
@@ -101,15 +102,47 @@ function registerMailTools(server, graph) {
 
   server.registerTool('mail_search', {
     title: 'Search mail',
-    description: 'Full-text search across all mail folders using Outlook KQL syntax, e.g. "invoice 4412", "from:alice subject:outage", "hasattachment:true". Results are relevance-ordered.',
+    description: 'Full-text search across all mail folders using Outlook KQL syntax, e.g. "invoice 4412", "from:alice subject:outage", "hasattachment:true". Results are relevance-ordered. Pass back a "more: cursor" value to fetch the next page. receivedAfter/receivedBefore (ISO dates) are applied client-side to the returned page, since Graph cannot reliably combine $search with $filter.',
     inputSchema: {
       query: z.string().min(1),
       limit: z.number().int().min(1).max(50).default(20),
+      cursor: z.string().optional().describe('Continue into the next page from a previous result\'s "more: cursor" value'),
+      receivedAfter: z.string().optional().describe('ISO date; drop messages received before this (applied to this page only)'),
+      receivedBefore: z.string().optional().describe('ISO date; drop messages received on/after this (applied to this page only)'),
     },
-  }, async ({ query, limit }) => {
-    const escaped = query.replaceAll('"', String.raw`\"`);
-    const result = await graph.getMailMessages({ search: `"${escaped}"`, top: limit, select: LIST_SELECT });
-    return toolResult(result, renderMessageList);
+  }, async ({ query, limit, cursor, receivedAfter, receivedBefore }) => {
+    let result;
+    if (cursor) {
+      let validated;
+      try {
+        validated = validateNext(cursor, '/me/messages');
+      } catch {
+        return { isError: true, content: [{ type: 'text', text: 'Invalid or expired cursor.' }] };
+      }
+      result = await graph.makeRequest(validated);
+    } else {
+      const escaped = query.replaceAll('"', String.raw`\"`);
+      result = await graph.getMailMessages({ search: `"${escaped}"`, top: limit, select: LIST_SELECT });
+    }
+    if (!result.success) return toolResult(result, () => '');
+    const after = receivedAfter ? new Date(receivedAfter).getTime() : null;
+    const before = receivedBefore ? new Date(receivedBefore).getTime() : null;
+    const items = (result.data?.value ?? []).filter((m) => {
+      if (!Number.isFinite(after) && !Number.isFinite(before)) return true;
+      const received = new Date(m.receivedDateTime).getTime();
+      if (Number.isNaN(received)) return true; // defensive: never silently drop on an unparsable date
+      if (Number.isFinite(after) && received < after) return false;
+      if (Number.isFinite(before) && received >= before) return false;
+      return true;
+    });
+    const next = result.data?.['@odata.nextLink'];
+    return toolResult({ success: true, data: items }, (data) => {
+      const lines = [];
+      const rendered = renderMessageList({ value: data });
+      if (rendered) lines.push(rendered);
+      if (next) lines.push(`more: cursor=${next}`);
+      return lines.join('\n');
+    });
   });
 
   server.registerTool('mail_get_attachment', {
@@ -122,10 +155,10 @@ function registerMailTools(server, graph) {
       maxChars: z.number().int().min(1000).max(400_000).default(60_000),
     },
   }, async ({ messageId, attachmentId, saveDir, maxChars }) => {
-    const meta = await graph.makeRequest(`/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}?$select=id,name,contentType,size`);
+    const meta = await graph.makeRequest(`/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}?$select=id,name,contentType,size`, { sensitive: true });
     if (!meta.success) return toolResult(meta, () => '');
     const name = String(meta.data?.name ?? 'attachment');
-    const content = await graph.makeRequest(`/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}/$value`, { raw: true });
+    const content = await graph.makeRequest(`/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}/$value`, { raw: true, sensitive: true });
     if (!content.success) return toolResult(content, () => '');
     const buffer = content.data;
     const ext = name.toLowerCase().split('.').pop();

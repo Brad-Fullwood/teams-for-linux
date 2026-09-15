@@ -5,7 +5,13 @@ const os = require('node:os');
 const path = require('node:path');
 const { htmlToText, truncate, formatDate, toolResult } = require('./format');
 
+const { registerDiscoveryTools } = require('./discovery');
+
 const MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024;
+
+function fileError(text) {
+  return { isError: true, content: [{ type: 'text', text }] };
+}
 
 /** Encode a sharing URL for Graph's /shares/{id} segment. */
 function shareId(url) {
@@ -95,11 +101,11 @@ function xlsxBufferToText(buffer, maxRowsPerSheet = 500) {
 /** Excel workbook via Graph's workbook API: every worksheet's used range as tab-separated rows. */
 async function xlsxToText(graph, driveId, itemId, maxRowsPerSheet) {
   const base = `/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}/workbook/worksheets`;
-  const sheets = await graph.makeRequest(`${base}?$select=id,name`);
+  const sheets = await graph.makeRequest(`${base}?$select=id,name`, { sensitive: true });
   if (!sheets.success) return sheets;
   const parts = [];
   for (const sheet of sheets.data?.value ?? []) {
-    const range = await graph.makeRequest(`${base}/${encodeURIComponent(sheet.id)}/usedRange(valuesOnly=true)?$select=address,text`);
+    const range = await graph.makeRequest(`${base}/${encodeURIComponent(sheet.id)}/usedRange(valuesOnly=true)?$select=address,text`, { sensitive: true });
     if (!range.success) {
       parts.push(`## ${sheet.name}\n(could not read: ${range.error})`);
       continue;
@@ -117,6 +123,69 @@ async function xlsxToText(graph, driveId, itemId, maxRowsPerSheet) {
  * @param {object} graph - GraphApiClient
  */
 function registerFileTools(server, graph) {
+  registerDiscoveryTools(server, graph);
+  server.registerTool('files_list_folder', {
+    title: 'List a shared folder',
+    description: 'List immediate children of a OneDrive/SharePoint folder using the signed-in Teams session. Returns original file links and a cursor for the next page. Read-only.',
+    inputSchema: {
+      url: z.string().url().describe('Sharing or web link of the folder'),
+      limit: z.number().int().min(1).max(200).default(100),
+      cursor: z.string().optional().describe('Next-page cursor from this tool for the same folder'),
+    },
+  }, async ({ url, limit, cursor }) => {
+    const item = await graph.makeRequest(`/shares/${shareId(url)}/driveItem?$select=id,name,folder,parentReference`, { sensitive: true });
+    if (!item.success) return toolResult(item, () => '');
+    const meta = item.data ?? {};
+    if (!meta.folder || !meta.id || !meta.parentReference?.driveId) return fileError('The link does not resolve to a folder.');
+    const base = `/drives/${encodeURIComponent(meta.parentReference.driveId)}/items/${encodeURIComponent(meta.id)}/children`;
+    let endpoint = `${base}?$top=${limit}&$select=id,name,size,file,folder,webUrl,lastModifiedDateTime`;
+    if (cursor) {
+      try {
+        const next = new URL(cursor);
+        if (next.origin !== 'https://graph.microsoft.com' || next.pathname !== `/v1.0${base}` || next.username || next.password || next.hash) return fileError('Invalid folder cursor. Use the cursor returned for this folder.');
+        endpoint = next.href;
+      } catch {
+        return fileError('Invalid folder cursor.');
+      }
+    }
+    const result = await graph.makeRequest(endpoint, { sensitive: true });
+    return toolResult(result, (data) => {
+      const lines = (data?.value ?? []).map((entry) => `- ${entry.name}${entry.folder ? '/' : ''} [${entry.folder ? 'folder' : entry.file?.mimeType ?? 'file'}, ${entry.size ?? 0} bytes]\n  link: ${entry.webUrl ?? ''}\n  modified: ${formatDate(entry.lastModifiedDateTime)}`);
+      if (data?.['@odata.nextLink']) lines.push(`next: cursor=${data['@odata.nextLink']}`);
+      return lines.join('\n');
+    });
+  });
+
+  server.registerTool('files_download', {
+    title: 'Download an original shared file',
+    description: 'Save original OneDrive/SharePoint file bytes using the signed-in Teams session, including DOCX XML bindings. No conversion. Maximum 25 MB; existing local files are never overwritten. Read-only against Microsoft.',
+    inputSchema: {
+      url: z.string().url().describe('Sharing or web link of the file'),
+      saveDir: z.string().optional().describe('Local destination directory; defaults to a new temporary directory'),
+    },
+  }, async ({ url, saveDir }) => {
+    const item = await graph.makeRequest(`/shares/${shareId(url)}/driveItem?$select=id,name,size,file,folder,parentReference`, { sensitive: true });
+    if (!item.success) return toolResult(item, () => '');
+    const meta = item.data ?? {};
+    if (meta.folder || !meta.file || !meta.id || !meta.parentReference?.driveId) return fileError('The link does not resolve to a downloadable file.');
+    if (meta.size > MAX_DOWNLOAD_BYTES) return fileError('File too large to download (limit 25 MB).');
+    const content = await graph.makeRequest(`/drives/${encodeURIComponent(meta.parentReference.driveId)}/items/${encodeURIComponent(meta.id)}/content`, { raw: true, sensitive: true });
+    if (!content.success) return toolResult(content, () => '');
+    if (!Buffer.isBuffer(content.data)) return fileError('Download did not return file bytes.');
+    if (content.data.length > MAX_DOWNLOAD_BYTES) return fileError('File too large to save (limit 25 MB).');
+    if (typeof meta.size === 'number' && content.data.length !== meta.size) return fileError('Download size changed or is incomplete; retry the download.');
+    const name = String(meta.name ?? 'download').replaceAll(/[\\/:*?"<>|\x00-\x1f]/g, '_').replace(/[. ]+$/, '') || 'download';
+    try {
+      const dir = saveDir ? path.resolve(saveDir) : fs.mkdtempSync(path.join(os.tmpdir(), 'o365-download-'));
+      fs.mkdirSync(dir, { recursive: true });
+      const target = path.join(dir, name);
+      fs.writeFileSync(target, content.data, { flag: 'wx', mode: 0o600 });
+      return { content: [{ type: 'text', text: `Saved original file to ${target} (${content.data.length} bytes).` }] };
+    } catch (error) {
+      return fileError(error.code === 'EEXIST' ? 'Destination already exists; choose a different saveDir. Nothing was overwritten.' : `Could not save file (${error.code ?? 'local filesystem error'}).`);
+    }
+  });
+
   server.registerTool('files_shared_with_me', {
     title: 'Files shared with me',
     description: 'Documents other people shared with you (OneDrive/SharePoint), newest first. Returns links usable with files_get_content.',
@@ -125,7 +194,7 @@ function registerFileTools(server, graph) {
       limit: z.number().int().min(1).max(100).default(30),
     },
   }, async ({ nameContains, limit }) => {
-    const result = await graph.makeRequest('/me/drive/sharedWithMe?$top=200');
+    const result = await graph.makeRequest('/me/drive/sharedWithMe?$top=200', { sensitive: true });
     return toolResult(result, (data) => (data?.value ?? [])
       .filter((i) => !nameContains || String(i.name ?? i.remoteItem?.name ?? '').toLowerCase().includes(nameContains.toLowerCase()))
       .sort((a, b) => new Date(b.remoteItem?.shared?.sharedDateTime ?? b.lastModifiedDateTime ?? 0) - new Date(a.remoteItem?.shared?.sharedDateTime ?? a.lastModifiedDateTime ?? 0))
@@ -148,7 +217,7 @@ function registerFileTools(server, graph) {
       saveDir: z.string().optional().describe('Directory to save files that are not converted to text (PDF, images); default: the OS temp dir'),
     },
   }, async ({ url, maxChars, maxRowsPerSheet, saveDir }) => {
-    const item = await graph.makeRequest(`/shares/${shareId(url)}/driveItem?$select=id,name,size,file,parentReference,webUrl,lastModifiedDateTime`);
+    const item = await graph.makeRequest(`/shares/${shareId(url)}/driveItem?$select=id,name,size,file,parentReference,webUrl,lastModifiedDateTime`, { sensitive: true });
     if (!item.success) return toolResult(item, () => '');
     const meta = item.data ?? {};
     const name = String(meta.name ?? '');
@@ -164,7 +233,7 @@ function registerFileTools(server, graph) {
     if ((meta.size ?? 0) > MAX_DOWNLOAD_BYTES) {
       return { isError: true, content: [{ type: 'text', text: `${header}File too large to read here (limit ${MAX_DOWNLOAD_BYTES / 1024 / 1024} MB).` }] };
     }
-    const content = await graph.makeRequest(`/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(meta.id)}/content`, { raw: true });
+    const content = await graph.makeRequest(`/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(meta.id)}/content`, { raw: true, sensitive: true });
     if (!content.success) return toolResult(content, () => '');
     const buffer = content.data;
 
