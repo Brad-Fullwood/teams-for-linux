@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { docxToText, xlsxBufferToText } = require('./files');
+const { pdfToolResult, pptxToText } = require('./documents');
 const { validateNext } = require('./discovery');
 const { htmlToText, truncate, formatDate, isoDaysAgo, odataString, toolResult, personName, personAddress } = require('./format');
 
@@ -147,14 +148,15 @@ function registerMailTools(server, graph) {
 
   server.registerTool('mail_get_attachment', {
     title: 'Read a mail attachment',
-    description: 'Content of one attachment from mail_list_attachments: Word (.docx) and Excel (.xlsx) become text; plain text is returned as is; other types (PDF, images) are saved to saveDir and the path is returned. Read-only against Microsoft.',
+    description: 'Content of one attachment from mail_list_attachments: Word (.docx), Excel (.xlsx), PDF and PowerPoint (.pptx) become text; plain text is returned as is; other types (images) are saved to saveDir and the path is returned. Read-only against Microsoft.',
     inputSchema: {
       messageId: z.string(),
       attachmentId: z.string(),
       saveDir: z.string().optional().describe('Directory to save binary attachments into (default: the OS temp dir)'),
       maxChars: z.number().int().min(1000).max(400_000).default(60_000),
+      maxPages: z.number().int().min(1).max(2000).default(200).describe('PDF only: maximum pages to extract text from'),
     },
-  }, async ({ messageId, attachmentId, saveDir, maxChars }) => {
+  }, async ({ messageId, attachmentId, saveDir, maxChars, maxPages }) => {
     const meta = await graph.makeRequest(`/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}?$select=id,name,contentType,size`, { sensitive: true });
     if (!meta.success) return toolResult(meta, () => '');
     const name = String(meta.data?.name ?? 'attachment');
@@ -169,6 +171,13 @@ function registerMailTools(server, graph) {
     }
     if (ext === 'xlsx' || ext === 'xlsm') {
       const text = xlsxBufferToText(buffer, 500);
+      if (text !== null) return { content: [{ type: 'text', text: header + '\n' + truncate(text, maxChars) }] };
+    }
+    if (ext === 'pdf' || String(meta.data?.contentType ?? '') === 'application/pdf') {
+      return pdfToolResult(buffer, { header, name, maxPages, maxChars, saveDir });
+    }
+    if (ext === 'pptx') {
+      const text = pptxToText(buffer);
       if (text !== null) return { content: [{ type: 'text', text: header + '\n' + truncate(text, maxChars) }] };
     }
     if (['txt', 'md', 'csv', 'json', 'log', 'xml', 'al', 'yml', 'yaml', 'html', 'htm'].includes(ext) || String(meta.data?.contentType ?? '').startsWith('text/')) {

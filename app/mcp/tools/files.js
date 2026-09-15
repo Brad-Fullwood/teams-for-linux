@@ -1,9 +1,9 @@
 const { z } = require('zod');
-const zlib = require('node:zlib');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { htmlToText, truncate, formatDate, toolResult } = require('./format');
+const { zipEntry, pdfToolResult, pptxToText } = require('./documents');
 
 const { registerDiscoveryTools } = require('./discovery');
 
@@ -16,38 +16,6 @@ function fileError(text) {
 /** Encode a sharing URL for Graph's /shares/{id} segment. */
 function shareId(url) {
   return `u!${Buffer.from(url).toString('base64').replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '')}`;
-}
-
-/**
- * Minimal ZIP reader (central directory + deflate) so .docx/.xlsx/.pptx can be read
- * without a dependency. Returns the named entry as a Buffer, or null.
- */
-function zipEntry(buffer, name) {
-  const eocd = buffer.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
-  if (eocd < 0) return null;
-  const count = buffer.readUInt16LE(eocd + 10);
-  let offset = buffer.readUInt32LE(eocd + 16);
-  for (let i = 0; i < count; i++) {
-    if (buffer.readUInt32LE(offset) !== 0x02014b50) return null;
-    const method = buffer.readUInt16LE(offset + 10);
-    const compressedSize = buffer.readUInt32LE(offset + 20);
-    const nameLength = buffer.readUInt16LE(offset + 28);
-    const extraLength = buffer.readUInt16LE(offset + 30);
-    const commentLength = buffer.readUInt16LE(offset + 32);
-    const localOffset = buffer.readUInt32LE(offset + 42);
-    const entryName = buffer.toString('utf8', offset + 46, offset + 46 + nameLength);
-    if (entryName === name) {
-      const localNameLength = buffer.readUInt16LE(localOffset + 26);
-      const localExtraLength = buffer.readUInt16LE(localOffset + 28);
-      const start = localOffset + 30 + localNameLength + localExtraLength;
-      const data = buffer.subarray(start, start + compressedSize);
-      if (method === 0) return Buffer.from(data);
-      if (method === 8) return zlib.inflateRawSync(data);
-      return null;
-    }
-    offset += 46 + nameLength + extraLength + commentLength;
-  }
-  return null;
 }
 
 /** Word document body as plain text: paragraphs become lines, tabs kept, tables become tab-separated rows. */
@@ -209,14 +177,15 @@ function registerFileTools(server, graph) {
 
   server.registerTool('files_get_content', {
     title: 'Read a shared file',
-    description: 'Content of a OneDrive/SharePoint file from its link: Word (.docx) and Excel (.xlsx) are converted to text, plain text/markdown/csv/json returned as is, anything else (PDF, images) is saved to saveDir and the path returned. Read-only against Microsoft.',
+    description: 'Content of a OneDrive/SharePoint file from its link: Word (.docx), Excel (.xlsx), PDF and PowerPoint (.pptx) are converted to text, plain text/markdown/csv/json returned as is, anything else (images) is saved to saveDir and the path returned. Read-only against Microsoft.',
     inputSchema: {
       url: z.string().url().describe('The sharing or web link of the file'),
       maxChars: z.number().int().min(1000).max(400_000).default(60_000),
       maxRowsPerSheet: z.number().int().min(10).max(5000).default(500),
-      saveDir: z.string().optional().describe('Directory to save files that are not converted to text (PDF, images); default: the OS temp dir'),
+      maxPages: z.number().int().min(1).max(2000).default(200).describe('PDF only: maximum pages to extract text from'),
+      saveDir: z.string().optional().describe('Directory to save files that are not converted to text (images); default: the OS temp dir'),
     },
-  }, async ({ url, maxChars, maxRowsPerSheet, saveDir }) => {
+  }, async ({ url, maxChars, maxRowsPerSheet, maxPages, saveDir }) => {
     const item = await graph.makeRequest(`/shares/${shareId(url)}/driveItem?$select=id,name,size,file,parentReference,webUrl,lastModifiedDateTime`, { sensitive: true });
     if (!item.success) return toolResult(item, () => '');
     const meta = item.data ?? {};
@@ -242,6 +211,13 @@ function registerFileTools(server, graph) {
       if (text === null) return { isError: true, content: [{ type: 'text', text: `${header}Could not unpack the document.` }] };
       return { content: [{ type: 'text', text: header + '\n' + truncate(text, maxChars) }] };
     }
+    if (ext === 'pdf' || (meta.file?.mimeType ?? '') === 'application/pdf') {
+      return pdfToolResult(buffer, { header, name, maxPages, maxChars, saveDir });
+    }
+    if (ext === 'pptx') {
+      const text = pptxToText(buffer);
+      if (text !== null) return { content: [{ type: 'text', text: header + '\n' + truncate(text, maxChars) }] };
+    }
     if (['txt', 'md', 'csv', 'json', 'log', 'xml', 'al', 'yml', 'yaml'].includes(ext) || (meta.file?.mimeType ?? '').startsWith('text/')) {
       return { content: [{ type: 'text', text: header + '\n' + truncate(buffer.toString('utf8'), maxChars) }] };
     }
@@ -249,8 +225,9 @@ function registerFileTools(server, graph) {
     fs.mkdirSync(dir, { recursive: true });
     const target = path.join(dir, name.replaceAll(/[\\/:*?"<>|]/g, '_'));
     fs.writeFileSync(target, buffer);
-    return { content: [{ type: 'text', text: `${header}Type "${ext}" is not converted to text here; saved to ${target}. PDFs can be read with pdftotext.` }] };
+    return { content: [{ type: 'text', text: `${header}Type "${ext}" is not converted to text here; saved to ${target}.` }] };
   });
 }
 
+// zipEntry now lives in ./documents; re-exported here so existing imports keep working.
 module.exports = { registerFileTools, docxToText, xlsxBufferToText, zipEntry, shareId };

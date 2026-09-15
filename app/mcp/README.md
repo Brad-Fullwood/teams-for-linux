@@ -55,8 +55,9 @@ claude mcp add --transport http --scope user teams http://127.0.0.1:3040/mcp --h
 | `mail_get_message` | One message with plain-text body |
 | `mail_search` | KQL search across all folders; `cursor` pages via `@odata.nextLink`, `receivedAfter`/`receivedBefore` filter the page client-side |
 | `mail_list_attachments` | Attachment names and sizes (no download) |
+| `mail_get_attachment` | Text of one attachment: Word, Excel, PDF and PowerPoint converted to text; images saved to disk |
 | `files_shared_with_me` | Documents shared with you on OneDrive/SharePoint |
-| `files_get_content` | Text of a shared Word, Excel or plain-text file from its link |
+| `files_get_content` | Text of a shared Word, Excel, PDF, PowerPoint or plain-text file from its link; images saved to disk |
 | `triage_digest` | Unread and flagged mail plus chats awaiting a reply, grouped by person, oldest first |
 
 ## Scope notes
