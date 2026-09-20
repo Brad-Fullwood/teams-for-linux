@@ -2,7 +2,7 @@ const { z } = require('zod');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { docxToText, xlsxBufferToText } = require('./files');
+const { docxToText, xlsxBufferToText, fileError, MAX_DOWNLOAD_BYTES } = require('./files');
 const { pdfToolResult, pptxToText } = require('./documents');
 const { validateNext } = require('./discovery');
 const { htmlToText, truncate, formatDate, isoDaysAgo, odataString, toolResult, personName, personAddress } = require('./format');
@@ -148,7 +148,7 @@ function registerMailTools(server, graph) {
 
   server.registerTool('mail_get_attachment', {
     title: 'Read a mail attachment',
-    description: 'Content of one attachment from mail_list_attachments: Word (.docx), Excel (.xlsx), PDF and PowerPoint (.pptx) become text; plain text is returned as is; other types (images) are saved to saveDir and the path is returned. Read-only against Microsoft.',
+    description: 'Content of one attachment from mail_list_attachments: Word (.docx), Excel (.xlsx), PDF and PowerPoint (.pptx) become text; plain text is returned as is; other types (images) are saved to saveDir and the path is returned. For the original file use mail_download_attachment. Read-only against Microsoft.',
     inputSchema: {
       messageId: z.string(),
       attachmentId: z.string(),
@@ -189,6 +189,35 @@ function registerMailTools(server, graph) {
     const target = path.join(dir, name.replaceAll(/[\\/:*?"<>|]/g, '_'));
     fs.writeFileSync(target, buffer);
     return { content: [{ type: 'text', text: `${header}Saved to ${target} (${meta.data?.contentType || 'unknown type'}).` }] };
+  });
+
+  server.registerTool('mail_download_attachment', {
+    title: 'Download an original mail attachment',
+    description: 'Save the original bytes of one attachment from mail_list_attachments. No conversion: use this when the file itself is needed (spreadsheets, Word documents, archives). Maximum 25 MB; existing local files are never overwritten. Read-only against Microsoft.',
+    inputSchema: {
+      messageId: z.string(),
+      attachmentId: z.string(),
+      saveDir: z.string().optional().describe('Local destination directory; defaults to a new temporary directory'),
+    },
+  }, async ({ messageId, attachmentId, saveDir }) => {
+    const base = `/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`;
+    const meta = await graph.makeRequest(`${base}?$select=id,name,contentType,size`, { sensitive: true });
+    if (!meta.success) return toolResult(meta, () => '');
+    if (meta.data?.size > MAX_DOWNLOAD_BYTES) return fileError('Attachment too large to download (limit 25 MB).');
+    const content = await graph.makeRequest(`${base}/$value`, { raw: true, sensitive: true });
+    if (!content.success) return toolResult(content, () => '');
+    if (!Buffer.isBuffer(content.data)) return fileError('Download did not return file bytes.');
+    if (content.data.length > MAX_DOWNLOAD_BYTES) return fileError('Attachment too large to save (limit 25 MB).');
+    const name = String(meta.data?.name ?? 'attachment').replaceAll(/[\\/:*?"<>|\x00-\x1f]/g, '_').replace(/[. ]+$/, '') || 'attachment';
+    try {
+      const dir = saveDir ? path.resolve(saveDir) : fs.mkdtempSync(path.join(os.tmpdir(), 'o365-download-'));
+      fs.mkdirSync(dir, { recursive: true });
+      const target = path.join(dir, name);
+      fs.writeFileSync(target, content.data, { flag: 'wx', mode: 0o600 });
+      return { content: [{ type: 'text', text: `Saved original attachment to ${target} (${content.data.length} bytes, ${meta.data?.contentType || 'unknown type'}).` }] };
+    } catch (error) {
+      return fileError(error.code === 'EEXIST' ? 'Destination already exists; choose a different saveDir. Nothing was overwritten.' : `Could not save attachment (${error.code ?? 'local filesystem error'}).`);
+    }
   });
 
   server.registerTool('mail_list_attachments', {

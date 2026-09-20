@@ -230,4 +230,4 @@ function registerFileTools(server, graph) {
 }
 
 // zipEntry now lives in ./documents; re-exported here so existing imports keep working.
-module.exports = { registerFileTools, docxToText, xlsxBufferToText, zipEntry, shareId };
+module.exports = { registerFileTools, docxToText, xlsxBufferToText, zipEntry, shareId, fileError, MAX_DOWNLOAD_BYTES };

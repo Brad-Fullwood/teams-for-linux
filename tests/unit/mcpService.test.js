@@ -88,7 +88,7 @@ describe('McpService', () => {
 		const listBody = await list.json();
 		const names = listBody.result.tools.map((t) => t.name).sort();
 		assert.deepStrictEqual(names, [
-			'files_download', 'files_get_content', 'files_list_folder', 'files_list_libraries', 'files_search', 'files_shared_with_me', 'mail_get_attachment', 'mail_get_message', 'mail_list_attachments', 'mail_list_messages', 'mail_search', 'me', 'sites_search',
+			'files_download', 'files_get_content', 'files_list_folder', 'files_list_libraries', 'files_search', 'files_shared_with_me', 'mail_download_attachment', 'mail_get_attachment', 'mail_get_message', 'mail_list_attachments', 'mail_list_messages', 'mail_search', 'me', 'sites_search',
 			'teams_download_image', 'teams_get_chat_messages', 'teams_get_meeting_transcript', 'teams_list_channels', 'teams_list_chats', 'teams_search_messages', 'triage_digest',
 		]);
 
