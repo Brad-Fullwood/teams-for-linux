@@ -1,4 +1,4 @@
-const { Notification, shell } = require("electron");
+const { app, Notification, shell } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -151,21 +151,23 @@ class DownloadManager {
    * Attach a `will-download` listener to the supplied session. Idempotent: if
    * called more than once on the same session the second call is a no-op.
    *
-   * Gated by `config.download.enabled` (default `false`) — the maintainer
-   * wants this feature opt-in while it's still in early development. The
-   * sub-flags (`notifyOnDownloadComplete`, etc.) keep their `true` defaults
-   * but only matter once the master switch is on. Graduating to opt-out
-   * later is a one-line default flip.
+   * Always attached, regardless of `config.download.enabled`. `#applySavePath`
+   * below must run on every download, not just when the feature is opted in:
+   * on some Linux desktop-portal setups (xdg-desktop-portal without a working
+   * FileChooser backend, common under Wayland), a `DownloadItem` left with no
+   * explicit save path is silently reported as `cancelled` after transferring
+   * every byte, because Chromium routes the unset-path case through a portal
+   * D-Bus call that never resolves. Setting a save path ourselves bypasses
+   * that call entirely. `config.download.enabled` still gates the visible
+   * feedback (`#shouldNotify`, `#shouldShowProgress`) — it controls whether
+   * the user sees a notification or progress bar, not whether the download
+   * completes.
    *
    * @param {Electron.Session} targetSession - The session to observe.
    */
   initialize(targetSession) {
-    if (!this.#config?.download?.enabled) {
-      console.debug("[DownloadManager] Disabled (config.download.enabled is not true)");
-      return;
-    }
     if (!targetSession) {
-      console.warn("[DownloadManager] No session provided; download notifications disabled");
+      console.warn("[DownloadManager] No session provided; downloads may silently fail");
       return;
     }
     if (this.#session) {
@@ -257,7 +259,19 @@ class DownloadManager {
     });
   }
 
+  // `download.enabled` is the master switch for all visible feedback
+  // (notification, progress bar, title prefix). It does not gate
+  // `#applySavePath` — that always runs, in `#onWillDownload`, regardless
+  // of this flag — so a `false`/unset value only silences the UI, it never
+  // affects whether the download itself completes.
+  #feedbackEnabled() {
+    return this.#config?.download?.enabled === true;
+  }
+
   #shouldNotify() {
+    if (!this.#feedbackEnabled()) {
+      return false;
+    }
     // `disableNotifications` is the global "no toasts at all" switch. Honour
     // it here so the download toast respects the same kill-switch as Teams
     // chat / meeting notifications.
@@ -271,24 +285,35 @@ class DownloadManager {
   }
 
   #shouldShowProgress() {
+    if (!this.#feedbackEnabled()) {
+      return false;
+    }
     return this.#config?.download?.showProgressBar !== false;
   }
 
   /**
-   * Decide where a download should be saved, honouring two opt-in config
-   * options. Both default off, so the out-of-the-box behaviour is unchanged
-   * (Electron saves to the OS default download directory without prompting).
+   * Decide where a download should be saved.
    *
-   * - `download.alwaysAskWhereToSave`: force Electron's native Save As dialog
-   *   for every download by leaving `savePath` unset and clearing any
-   *   pre-seeded dialog options. (Electron shows the dialog automatically
-   *   when no save path is set, but a `saveDirectory` would suppress it, so
-   *   the ask option wins when both are set.)
-   * - `download.saveDirectory`: a fixed directory to drop files into without
-   *   prompting. The filename Electron derived from the response is preserved.
+   * `download.alwaysAskWhereToSave` forces Electron's native Save As dialog
+   * for every download by leaving `savePath` unset and clearing any
+   * pre-seeded dialog options. (Electron shows the dialog automatically when
+   * no save path is set, but a `saveDirectory` would suppress it, so the ask
+   * option wins when both are set.)
+   *
+   * Otherwise we ALWAYS call `item.setSavePath()` ourselves: either into
+   * `download.saveDirectory` when configured, or into Electron's own
+   * `app.getPath("downloads")` when it is not. We do not leave the path
+   * unset and let Electron pick its default location, because on some Linux
+   * desktop-portal setups that path drives the DownloadItem through a
+   * FileChooser D-Bus request that never resolves, and the download is then
+   * reported `cancelled` after the bytes have already been fully received
+   * (reproduced with an unpatched build under Wayland + xdg-desktop-portal:
+   * see PR-downloads.md). Setting the path ourselves — same target directory,
+   * same filename — skips that request and the download completes normally.
    *
    * Any failure here is swallowed: a bad config value must never abort the
-   * download, it just falls back to Electron's default location.
+   * download, it just falls back to `uniqueSavePath` in the OS downloads
+   * directory.
    */
   #applySavePath(item) {
     const download = this.#config?.download ?? {};
@@ -296,10 +321,11 @@ class DownloadManager {
       // Leave savePath unset so Electron prompts. Nothing to do.
       return;
     }
-    const saveDirectory = download.saveDirectory;
-    if (typeof saveDirectory !== "string" || saveDirectory.trim() === "") {
-      return;
-    }
+    const configuredDirectory = download.saveDirectory;
+    const saveDirectory =
+      typeof configuredDirectory === "string" && configuredDirectory.trim() !== ""
+        ? configuredDirectory
+        : app.getPath("downloads");
     try {
       const filename = item.getFilename?.() ?? "download";
       // Create the directory if missing — otherwise setSavePath into a
@@ -308,7 +334,7 @@ class DownloadManager {
       fs.mkdirSync(saveDirectory, { recursive: true });
       item.setSavePath?.(uniqueSavePath(saveDirectory, filename));
     } catch (error) {
-      console.warn("[DownloadManager] Could not apply saveDirectory; using default", {
+      console.warn("[DownloadManager] Could not apply save path; using Electron's default", {
         message: error?.message,
       });
     }

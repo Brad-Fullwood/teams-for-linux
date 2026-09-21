@@ -45,6 +45,12 @@ function installElectronMock() {
 				openExternal: (...args) => { openExternalCalls.push(args); return Promise.resolve(); },
 				openPath: (...args) => { openPathCalls.push(args); return Promise.resolve(''); },
 			},
+			app: {
+				// A real, writable directory (under the OS tmpdir) so #applySavePath's
+				// mkdirSync/setSavePath branch runs the same way it does in production,
+				// instead of silently no-op'ing on an EACCES from a fake root path.
+				getPath: (name) => path.join(os.tmpdir(), 'dm-mock-' + name),
+			},
 		},
 	};
 
@@ -197,14 +203,17 @@ describe('DownloadManager', () => {
 		const fakeSession = makeFakeSession();
 		manager.initialize(fakeSession);
 
-		const savePath = '/home/user/Downloads/report.pdf';
-		const item = makeFakeDownloadItem('report.pdf', savePath);
+		// #applySavePath always assigns a save path now (into Electron's own
+		// downloads directory here, since none is configured), overriding
+		// whatever the item started with — so that is the path the click
+		// handler must open, not the placeholder passed into the fake item.
+		const item = makeFakeDownloadItem('report.pdf', '/home/user/Downloads/report.pdf');
 		fakeSession.emit('will-download', {}, item);
 		item.emit('done', {}, 'completed');
 
 		notificationInstances[0].emit('click');
 
-		assert.deepStrictEqual(showItemInFolderCalls, [[savePath]]);
+		assert.deepStrictEqual(showItemInFolderCalls, [[path.join(os.tmpdir(), 'dm-mock-downloads', 'report.pdf')]]);
 	});
 
 	it('shows a failure notification when a download is interrupted', () => {
@@ -570,31 +579,47 @@ describe('DownloadManager', () => {
 		assert.doesNotThrow(() => item.emit('updated'));
 	});
 
-	it('does nothing when download.enabled is not set (opt-in default)', () => {
+	it('still attaches will-download and sets a save path when download.enabled is not set (opt-in default only gates feedback)', () => {
 		const DownloadManager = require(downloadManagerPath);
 		const manager = new DownloadManager({});
 		const fakeSession = makeFakeSession();
-		const onSpy = (...args) => fakeSession._onCalls.push(args);
+		const originalOn = fakeSession.on.bind(fakeSession);
 		fakeSession._onCalls = [];
-		fakeSession.on = onSpy;
+		fakeSession.on = (...args) => {
+			fakeSession._onCalls.push(args);
+			return originalOn(...args);
+		};
 
 		manager.initialize(fakeSession);
 
-		// No 'will-download' listener was attached, so a download event would
-		// be ignored.
-		assert.strictEqual(fakeSession._onCalls.length, 0);
+		// The listener is always attached so the save-path fix always runs,
+		// even though no notification/progress feedback is configured on.
+		assert.strictEqual(fakeSession._onCalls.length, 1);
+		assert.strictEqual(fakeSession._onCalls[0][0], 'will-download');
+
+		const item = makeFakeDownloadItem('report.pdf', '', { totalBytes: 100 });
+		fakeSession.emit('will-download', {}, item);
+
+		assert.deepStrictEqual(item._setSavePathCalls, [path.join(os.tmpdir(), 'dm-mock-downloads', 'report.pdf')]);
 	});
 
-	it('does nothing when download.enabled is explicitly false', () => {
+	it('does not notify or show progress when download.enabled is explicitly false', () => {
 		const DownloadManager = require(downloadManagerPath);
-		const manager = new DownloadManager({ download: { enabled: false } });
+		const mainAppWindow = makeFakeMainAppWindow();
+		const manager = new DownloadManager({ download: { enabled: false } }, mainAppWindow);
 		const fakeSession = makeFakeSession();
-		fakeSession._onCalls = [];
-		fakeSession.on = (...args) => fakeSession._onCalls.push(args);
 
 		manager.initialize(fakeSession);
 
-		assert.strictEqual(fakeSession._onCalls.length, 0);
+		const item = makeFakeDownloadItem('report.pdf', '', { totalBytes: 100 });
+		fakeSession.emit('will-download', {}, item);
+		item.emit('done', {}, 'completed');
+
+		// Save path is still applied (the download-succeeds fix), but no
+		// visible feedback is shown since enabled is false.
+		assert.deepStrictEqual(item._setSavePathCalls, [path.join(os.tmpdir(), 'dm-mock-downloads', 'report.pdf')]);
+		assert.strictEqual(notificationInstances.length, 0);
+		assert.strictEqual(mainAppWindow._calls.length, 0);
 	});
 
 	it('starts a JobView per download with filename + totalBytes', async () => {
@@ -905,16 +930,21 @@ describe('DownloadManager', () => {
 		assert.strictEqual(item._setSavePathCalls.length, 0);
 	});
 
-	it('does not set a save path when no saveDirectory configured', () => {
+	it("sets a save path into Electron's own downloads directory when no saveDirectory configured", () => {
 		const DownloadManager = require(downloadManagerPath);
 		const manager = new DownloadManager(enabledConfig());
 		const fakeSession = makeFakeSession();
 		manager.initialize(fakeSession);
 
-		const item = makeFakeDownloadItem('report.pdf', '/home/user/Downloads/report.pdf', { totalBytes: 100 });
+		const item = makeFakeDownloadItem('report.pdf', '', { totalBytes: 100 });
 		fakeSession.emit('will-download', {}, item);
 
-		assert.strictEqual(item._setSavePathCalls.length, 0);
+		// Never leave the save path unset: on some Linux desktop-portal setups
+		// an unset path routes the download through a D-Bus FileChooser call
+		// that can hang, and Chromium then reports a fully-received download
+		// as `cancelled`. Falling back to app.getPath("downloads") (mocked as
+		// /mock/downloads) avoids that path entirely.
+		assert.deepStrictEqual(item._setSavePathCalls, [path.join(os.tmpdir(), 'dm-mock-downloads', 'report.pdf')]);
 	});
 
 	it('opens the file when openWhenDone is true and the download completes', async () => {
@@ -923,13 +953,14 @@ describe('DownloadManager', () => {
 		const fakeSession = makeFakeSession();
 		manager.initialize(fakeSession);
 
-		const savePath = '/home/user/Downloads/report.pdf';
-		const item = makeFakeDownloadItem('report.pdf', savePath, { totalBytes: 100 });
+		// Same reasoning as the "opens the containing folder" test above:
+		// #applySavePath overrides the item's initial save path.
+		const item = makeFakeDownloadItem('report.pdf', '/home/user/Downloads/report.pdf', { totalBytes: 100 });
 		fakeSession.emit('will-download', {}, item);
 		item.emit('done', {}, 'completed');
 
 		await Promise.resolve();
-		assert.deepStrictEqual(openPathCalls, [[savePath]]);
+		assert.deepStrictEqual(openPathCalls, [[path.join(os.tmpdir(), 'dm-mock-downloads', 'report.pdf')]]);
 	});
 
 	it('does not open the file when openWhenDone is false (default)', async () => {

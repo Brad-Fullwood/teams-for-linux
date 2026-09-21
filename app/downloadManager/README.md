@@ -46,6 +46,19 @@ each download through three independent feedback channels:
 Per-item UI beyond the above (in-app downloads list, tray badge while active)
 is intentionally out of scope.
 
+**Save path is always set explicitly, regardless of `download.enabled`:**
+on Linux desktop-portal setups (xdg-desktop-portal without a working
+FileChooser backend, common under Wayland) a `DownloadItem` left with no
+explicit save path is routed through a portal D-Bus call that can hang and
+never resolve; Chromium then reports the download `cancelled` after every
+byte has already been received, so the file looks like it failed even
+though the transfer completed. `#applySavePath` always calls
+`item.setSavePath()` — into `download.saveDirectory` when configured,
+otherwise into `app.getPath("downloads")` — which skips that D-Bus call
+entirely. This runs unconditionally, before the `download.enabled` check, so
+downloads succeed even with the manager's notifications/progress feedback
+turned off.
+
 **Dependencies:**
 - `config` - Application configuration (`config.download.*` keys are read)
 - `mainAppWindow` - Main window module exposing `getWindow()` for taskbar progress updates and window-title prefix
@@ -67,7 +80,7 @@ been created by the main window.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `download.enabled` | `boolean` | `false` | Master switch for the entire feature. While download UX is in early development this is opt-in; set `true` to turn the manager on. The sub-flags only take effect once this is `true`. |
+| `download.enabled` | `boolean` | `false` | Master switch for the visible feedback (notification, progress bar, title prefix). While download UX is in early development this is opt-in; set `true` to turn it on. Does **not** gate the save-path fix above — that always applies, so downloads complete correctly even with this off. |
 | `download.notifyOnDownloadComplete` | `boolean` | `true` | Show a system notification when a download finishes |
 | `download.showProgressBar` | `boolean` | `true` | Drive the taskbar progress bar, KDE JobView and Unity LauncherEntry while downloads are in flight |
 | `download.showTitlePrefix` | `boolean` | `true` | Also prefix the window title with `[N%]` (or `[downloading]`). Set to `false` on KDE / Ubuntu where the JobView / LauncherEntry already shows progress and the title churn is redundant. |
