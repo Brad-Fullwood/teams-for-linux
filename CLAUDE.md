@@ -157,7 +157,7 @@ When contributing:
 
 The project documentation is built with Docusaurus and deployed to GitHub Pages:
 - **URL**: https://ismaelmartinez.github.io/teams-for-linux/
-- **Platform**: Docusaurus 3.9.2
+- **Platform**: Docusaurus 3 (exact version in `docs-site/package.json`)
 - **Local Development**: `cd docs-site && npm run start`
 - **Deployment**: Automated via GitHub Actions
 
@@ -190,13 +190,7 @@ When adding or modifying IPC channels, you must:
 
 **CRITICAL: DO NOT REMOVE** - The `trayIconRenderer` and `mqttStatusMonitor` modules **MUST** be included in the list of modules that receive `ipcRenderer` during initialization in `app/browser/preload.js`.
 
-```javascript
-// REQUIRED: These modules need ipcRenderer for IPC communication
-const modulesRequiringIpc = ["settings", "theme", "trayIconRenderer", "mqttStatusMonitor"];
-if (modulesRequiringIpc.includes(module.name)) {
-  moduleInstance.init(config, ipcRenderer);
-}
-```
+The list is the `modulesRequiringIpc` set in `app/browser/preload.js`. Modules in it are initialised with `init(config, ipcRenderer)`, all others with `init(config)`.
 
 **Why this is critical:**
 - The `trayIconRenderer` module requires `ipcRenderer` to communicate with the main process for tray icon updates
