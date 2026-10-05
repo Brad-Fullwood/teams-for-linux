@@ -57,6 +57,8 @@ claude mcp add --transport http --scope user teams http://127.0.0.1:3040/mcp --h
 | `mail_list_attachments` | Attachment names and sizes (no download) |
 | `mail_get_attachment` | Text of one attachment: Word, Excel, PDF and PowerPoint converted to text; images saved to disk |
 | `mail_download_attachment` | Save one attachment's original bytes to disk, no conversion (25 MB limit, no overwrite) |
+| `calendar_list_events` | Outlook calendar events for a date range in local time, recurring meetings expanded, with all-day, tentative and cancelled markers, organiser and Teams link |
+| `calendar_get_event` | One event with attendees and their responses, and the agenda as plain text |
 | `files_shared_with_me` | Documents shared with you on OneDrive/SharePoint |
 | `files_get_content` | Text of a shared Word, Excel, PDF, PowerPoint or plain-text file from its link; images saved to disk |
 | `triage_digest` | Unread and flagged mail plus chats awaiting a reply, grouped by person, oldest first |
@@ -69,7 +71,7 @@ Mail relies on the Teams web token carrying `Mail.Read` (it does in the tenants 
 
 - `index.js` — `McpService`: HTTP listener, origin and auth checks, per-request MCP server
 - `tools/format.js` — HTML to text, OData escaping, result shaping
-- `tools/teams.js`, `tools/mail.js`, `tools/triage.js` — tool definitions
+- `tools/teams.js`, `tools/mail.js`, `tools/calendar.js`, `tools/triage.js` — tool definitions
 - `../chatService/index.js` — `ChatServiceClient`: Skype token + regional chat service, GET only
 - `../chatService/transcripts.js` — `TranscriptClient`: recording link → Graph drive item → SharePoint media transcript, GET only
 

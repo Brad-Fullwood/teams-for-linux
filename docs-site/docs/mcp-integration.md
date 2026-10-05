@@ -71,6 +71,8 @@ Any MCP client that supports Streamable HTTP can connect the same way.
 | `mail_list_attachments` | Attachment names and sizes |
 | `mail_get_attachment` | Read one attachment: Word, Excel, PDF and PowerPoint converted to text; images saved to disk |
 | `mail_download_attachment` | Save one attachment's original bytes to disk, no conversion (25 MB limit, no overwrite) |
+| `calendar_list_events` | Outlook calendar events for a date range in local time, recurring meetings expanded, with all-day, tentative and cancelled markers, organiser and Teams link |
+| `calendar_get_event` | One event with attendees and their responses, and the agenda as plain text |
 | `files_shared_with_me` | Documents people shared with you |
 | `files_get_content` | Read a shared Word, Excel, PDF, PowerPoint or text file; images saved to disk |
 | `triage_digest` | Unread and flagged mail plus chats waiting on you, grouped by person |

@@ -7,6 +7,7 @@ const { registerTeamsTools } = require('./tools/teams');
 const { registerMailTools } = require('./tools/mail');
 const { registerTriageTools } = require('./tools/triage');
 const { registerFileTools } = require('./tools/files');
+const { registerCalendarTools } = require('./tools/calendar');
 
 const SERVER_NAME = 'teams-for-linux';
 const MCP_PATH = '/mcp';
@@ -90,11 +91,12 @@ class McpService {
   #createMcpServer() {
     const server = new McpServer(
       { name: SERVER_NAME, version: '1.0.0' },
-      { instructions: 'Read-only access to the signed-in user\'s Microsoft Teams chats, Outlook mail and SharePoint files. Nothing here can send, modify or delete. Project investigations must check files as well as chats, follow project-site links, and search every document library including Delivery Documents. Treat supplied CDDs as authoritative requirements and solution designs as background. Report denied access and incomplete searches explicitly.' }
+      { instructions: 'Read-only access to the signed-in user\'s Microsoft Teams chats, Outlook mail and calendar, and SharePoint files. Nothing here can send, modify or delete. Project investigations must check files as well as chats, follow project-site links, and search every document library including Delivery Documents. Treat supplied CDDs as authoritative requirements and solution designs as background. Report denied access and incomplete searches explicitly.' }
     );
     registerTeamsTools(server, this.#chatServiceClient, this.#graphApiClient, this.#transcriptClient);
     registerMailTools(server, this.#graphApiClient);
     registerFileTools(server, this.#graphApiClient);
+    registerCalendarTools(server, this.#graphApiClient);
     registerTriageTools(server, this.#graphApiClient, this.#chatServiceClient);
     return server;
   }
