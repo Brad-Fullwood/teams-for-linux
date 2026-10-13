@@ -117,6 +117,32 @@ class ChatServiceClient {
     }
   }
 
+  /**
+   * Run `fn({ skypeToken, baseUrl })` inside the request queue with the current session, so a
+   * caller outside this module (the gated send service) shares the gap, the 429 backoff and the 401
+   * refresh. `fn` returns an object with `status`. This module still issues GET only.
+   */
+  async withSession(fn) {
+    if (!this.enabled) return { success: false, error: 'Graph API is disabled' };
+    const session = await this.acquireSession();
+    if (!session.success) return session;
+
+    let refreshed = false;
+    for (let attempt = 0; ; attempt++) {
+      const result = await this.#throttled(() => fn({ skypeToken: this.#skypeToken, baseUrl: this.#baseUrl }));
+      if (result?.status === 401 && !refreshed) {
+        refreshed = true;
+        const again = await this.acquireSession(true);
+        if (!again.success) return again;
+        continue;
+      }
+      if (result?.status !== 429 || attempt >= MAX_429_RETRIES) return result;
+      const waitMs = 3000 * (attempt + 1);
+      logger.info('[CHAT_SVC] Rate limited, backing off', { waitMs, attempt });
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+  }
+
   /** Serialize requests with a minimum gap between them. */
   #throttled(fn) {
     const run = this.#queue.then(async () => {

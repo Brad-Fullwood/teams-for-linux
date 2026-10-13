@@ -17,6 +17,7 @@ const HomeAssistantDiscovery = require("./mqtt/homeAssistantDiscovery");
 const GraphApiClient = require("./graphApi");
 const { registerGraphApiHandlers } = require("./graphApi/ipcHandlers");
 const { McpService } = require("./mcp");
+const { SendService } = require("./sendService");
 const ChatServiceClient = require("./chatService");
 const { TranscriptClient } = require("./chatService/transcripts");
 const { allowedChannels } = require("./security/ipcValidator");
@@ -116,6 +117,7 @@ let mqttMediaStatusService = null;
 let haDiscovery = null;
 let graphApiClient = null;
 let mcpService = null;
+let sendService = null;
 let chatServiceClient = null;
 let quickChatManager = null;
 
@@ -212,6 +214,9 @@ if (gotTheLock) {
     }
     if (mcpService) {
       await mcpService.shutdown();
+    }
+    if (sendService) {
+      await sendService.shutdown();
     }
   });
   app.on("certificate-error", handleCertificateError);
@@ -632,6 +637,11 @@ function initializeMcpService() {
   mcpService = new McpService(config);
   mcpService.initialize(graphApiClient, chatServiceClient, transcriptClient).catch((error) => {
     console.error("[MCP] Failed to start MCP server", { message: error.message });
+  });
+  // Gated send endpoint: starts only when the work-assistant send secret exists.
+  sendService = new SendService();
+  sendService.initialize({ graphApiClient, chatServiceClient, mainWindow: mainAppWindow.getWindow() }).catch((error) => {
+    console.error("[SEND] Failed to start send service", { message: error.message });
   });
 }
 
