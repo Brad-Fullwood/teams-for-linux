@@ -1,4 +1,5 @@
 const { randomInt } = require('node:crypto');
+const path = require('node:path');
 const { textToHtml, parseRecipients } = require('./format');
 
 const REQUEST_TIMEOUT_MS = 30000;
@@ -8,6 +9,22 @@ const TOKEN_EXPIRY_BUFFER_S = 5 * 60;
 const NOTES_TO_SELF = '48:notes';
 const CHAT_ID = /^19:[^\s/?#;@]+@[a-z0-9.]+$/i;
 const MAIL_ID = /^[A-Za-z0-9+/=_-]{16,512}$/;
+const GRAPH_MESSAGES_URL = 'https://graph.microsoft.com/v1.0/me/messages';
+// Graph takes a fileAttachment of up to 3 MB in one POST. Larger files need an upload session.
+const MAX_DRAFT_ATTACHMENT_BYTES = 3 * 1024 * 1024;
+const CONTENT_TYPES = {
+  '.pdf': 'application/pdf',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.txt': 'text/plain',
+  '.csv': 'text/csv',
+  '.md': 'text/markdown',
+  '.zip': 'application/zip',
+};
 
 /** Decode a JWT payload. Returns {} when the token is not a JWT. The token itself is not kept. */
 function jwtClaims(token) {
@@ -26,6 +43,9 @@ const scopesOf = (token) => new Set(String(jwtClaims(token).scp || '').split(' '
  * @returns {{status: number, error: string} | null}
  */
 function checkTarget(tool, target, to = [], cc = []) {
+  if (tool === 'mail_create_draft') {
+    return parseRecipients(to).invalid ? { status: 400, error: 'invalid recipient' } : null;
+  }
   if (tool === 'teams_send_message') {
     if (/@thread\.tacv2|;messageid=/i.test(target)) return { status: 400, error: 'channel threads are not supported' };
     if (target !== NOTES_TO_SELF && !CHAT_ID.test(target)) return { status: 400, error: 'target is not a chat id' };
@@ -163,4 +183,52 @@ async function sendMailReply(deps, { target, body, to, cc }) {
   }
 }
 
-module.exports = { jwtClaims, scopesOf, checkTarget, sendTeamsMessage, sendMailReply, OutlookTokenSource, NOTES_TO_SELF };
+/**
+ * Create a draft in the Drafts folder with one file attachment. It does not send: it uses only the Graph
+ * token, which carries Mail.ReadWrite and no Mail.Send, and calls only POST /me/messages and
+ * POST /me/messages/{id}/attachments. The Outlook token, which can send, is not used.
+ * @param {{graphApiClient: object}} deps
+ * @param {{to: string[], subject: string, body: string, attachment: {name: string, bytes: Buffer}}} request
+ * @returns {Promise<{status: number, id?: string, webLink?: string, error?: string}>}
+ */
+async function createMailDraft(deps, { to, subject, body, attachment }) {
+  if (attachment.bytes.length > MAX_DRAFT_ATTACHMENT_BYTES) return { status: 400, error: 'attachment is over 3 MB' };
+  const graphToken = await deps.graphApiClient.acquireToken();
+  if (!graphToken?.success || !graphToken.token) return { status: 502, error: `no Graph token (${graphToken?.error || 'unknown'})` };
+  if (!scopesOf(graphToken.token).has('Mail.ReadWrite')) return { status: 501, error: 'draft not available: the Graph token has no Mail.ReadWrite' };
+
+  const headers = { Authorization: `Bearer ${graphToken.token}`, 'Content-Type': 'application/json', Accept: 'application/json' };
+  const post = (url, payload) => fetch(url, { method: 'POST', headers, body: JSON.stringify(payload), signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+  const recipient = ({ name, address }) => ({ emailAddress: name ? { name, address } : { address } });
+
+  let draft;
+  try {
+    const response = await post(GRAPH_MESSAGES_URL, {
+      subject,
+      body: { contentType: 'HTML', content: textToHtml(body) },
+      toRecipients: parseRecipients(to).recipients.map(recipient),
+    });
+    const data = await readJson(response);
+    if (!response.ok) return upstreamError('Graph', response.status, data);
+    if (!data?.id) return { status: 502, error: 'Graph returned no draft id' };
+    draft = { id: data.id, webLink: data.webLink ?? null };
+  } catch (error) {
+    return networkError(error);
+  }
+
+  const failed = (detail) => ({ status: 502, error: `draft ${draft.id} created without its attachment: ${detail}` });
+  try {
+    const response = await post(`${GRAPH_MESSAGES_URL}/${encodeURIComponent(draft.id)}/attachments`, {
+      '@odata.type': '#microsoft.graph.fileAttachment',
+      name: attachment.name,
+      contentType: CONTENT_TYPES[path.extname(attachment.name).toLowerCase()] || 'application/octet-stream',
+      contentBytes: attachment.bytes.toString('base64'),
+    });
+    if (!response.ok) return failed(upstreamError('Graph', response.status, await readJson(response)).error);
+  } catch (error) {
+    return failed(networkError(error).error);
+  }
+  return { status: 200, id: draft.id, webLink: draft.webLink };
+}
+
+module.exports = { jwtClaims, scopesOf, checkTarget, sendTeamsMessage, sendMailReply, createMailDraft, OutlookTokenSource, NOTES_TO_SELF };

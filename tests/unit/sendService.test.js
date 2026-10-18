@@ -6,9 +6,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { approvalToken, NonceStore, RateLimiter, checkShape, checkApproval } = require('../../app/sendService/gate');
+const { approvalToken, NonceStore, RateLimiter, checkShape, checkApproval, resolveAttachment, readAttachment, sha256Hex } = require('../../app/sendService/gate');
 const { textToHtml, parseRecipient, parseRecipients } = require('../../app/sendService/format');
-const { checkTarget, scopesOf, sendTeamsMessage, sendMailReply } = require('../../app/sendService/senders');
+const { checkTarget, scopesOf, sendTeamsMessage, sendMailReply, createMailDraft } = require('../../app/sendService/senders');
 const { SendService, loadSecret } = require('../../app/sendService');
 const ChatServiceClient = require('../../app/chatService');
 
@@ -324,6 +324,158 @@ describe('send secret file', () => {
 		const service = new SendService({ secretPath: path.join(dir, 'missing'), port: 0 });
 		await service.initialize({ graphApiClient: {}, chatServiceClient: {} });
 		assert.strictEqual(service.address(), null);
+	});
+});
+
+describe('mail_create_draft', () => {
+	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'send-draft-')));
+	const roots = [path.join(dir, 'attachments'), path.join(dir, 'tmp')];
+	const outside = path.join(dir, 'outside');
+	for (const d of [...roots, outside]) fs.mkdirSync(d);
+	const PDF = Buffer.from('%PDF-1.7 test\n');
+	const allowed = path.join(roots[0], 'report.pdf');
+	fs.writeFileSync(allowed, PDF);
+	fs.writeFileSync(path.join(roots[1], 'notes.txt'), 'x');
+	const secretFile = path.join(outside, 'secret.txt');
+	fs.writeFileSync(secretFile, 'not for mail');
+	const escape = path.join(roots[0], 'escape.txt');
+	fs.symlinkSync(secretFile, escape);
+	const linkedIn = path.join(outside, 'link-in.pdf');
+	fs.symlinkSync(allowed, linkedIn);
+	fs.writeFileSync(path.join(roots[0], 'big.bin'), Buffer.alloc(3 * 1024 * 1024 + 1));
+
+	const draft = (fields = {}) => {
+		const request = { tool: 'mail_create_draft', to: ['Sam <sam@example.com>'], subject: 'Report', body: 'Hi\n\nBrad', attachment_path: allowed, expiry: NOW_S + 120, nonce: '00112233aabbccdd', ...fields };
+		return { ...request, token: approvalToken(KEY, { ...request, attachmentSha256: sha256Hex(fs.readFileSync(request.attachment_path)) }) };
+	};
+
+	it('requires to, subject, body and an attachment path', () => {
+		const ok = { tool: 'mail_create_draft', to: ['a@b.co'], subject: 's', body: 'b', attachment_path: allowed, expiry: NOW_S, nonce: '00112233aabbccdd' };
+		assert.strictEqual(checkShape(ok, { attachmentRoots: roots }), null);
+		assert.strictEqual(checkShape({ ...ok, target: undefined }, { attachmentRoots: roots }), null, 'no target needed');
+		assert.deepStrictEqual(checkShape({ ...ok, to: [] }, { attachmentRoots: roots }), { status: 400, error: 'draft needs to as a list of one or more addresses' });
+		assert.deepStrictEqual(checkShape({ ...ok, to: 'a@b.co' }, { attachmentRoots: roots }).status, 400);
+		assert.deepStrictEqual(checkShape({ ...ok, to: undefined }, { attachmentRoots: roots }).status, 400);
+		assert.deepStrictEqual(checkShape({ ...ok, subject: ' ' }, { attachmentRoots: roots }), { status: 400, error: 'subject is empty' });
+		assert.deepStrictEqual(checkShape({ ...ok, body: '' }, { attachmentRoots: roots }), { status: 400, error: 'body is empty' });
+		assert.deepStrictEqual(checkShape({ ...ok, attachment_path: undefined }, { attachmentRoots: roots }), { status: 400, error: 'attachment_path must be an absolute path' });
+		assert.deepStrictEqual(checkShape({ ...ok, cc: ['c@d.co'] }, { attachmentRoots: roots }), { status: 400, error: 'draft does not take cc' });
+		assert.strictEqual(checkShape({ ...ok, nonce: 'xyz' }, { attachmentRoots: roots }).status, 400);
+		assert.deepStrictEqual(checkTarget('mail_create_draft', undefined, ['not an address']), { status: 400, error: 'invalid recipient' });
+		assert.strictEqual(checkTarget('mail_create_draft', undefined, ['Sam <sam@example.com>']), null);
+	});
+
+	it('attaches only files inside the allowed folders, symlinks followed', () => {
+		assert.deepStrictEqual(resolveAttachment(allowed, roots), { path: allowed, size: PDF.length });
+		assert.strictEqual(resolveAttachment(path.join(roots[1], 'notes.txt'), roots).path, path.join(roots[1], 'notes.txt'));
+		assert.strictEqual(resolveAttachment(linkedIn, roots).path, allowed, 'a link from outside to an allowed file resolves inside');
+		const outsideError = { status: 400, error: 'attachment is outside the allowed folders' };
+		assert.deepStrictEqual(resolveAttachment(path.join(roots[0], '..', 'outside', 'secret.txt'), roots), outsideError, '../ traversal');
+		assert.deepStrictEqual(resolveAttachment(escape, roots), outsideError, 'symlink pointing out');
+		assert.deepStrictEqual(resolveAttachment(`${roots[0]}-evil/x.pdf`, [roots[0]]).status, 400);
+		assert.deepStrictEqual(resolveAttachment('/etc/passwd', roots), outsideError);
+		assert.deepStrictEqual(resolveAttachment('attachments/report.pdf', roots), { status: 400, error: 'attachment_path must be an absolute path' });
+		assert.deepStrictEqual(resolveAttachment(path.join(roots[0], 'missing.pdf'), roots), { status: 400, error: 'attachment not found' });
+		assert.deepStrictEqual(resolveAttachment(roots[0] + '/', [dir]), { status: 400, error: 'attachment is not a file' });
+		assert.deepStrictEqual(readAttachment(path.join(roots[0], 'big.bin'), roots), { status: 400, error: 'attachment is over 3 MB' });
+		const read = readAttachment(allowed, roots);
+		assert.strictEqual(read.name, 'report.pdf');
+		assert.ok(read.bytes.equals(PDF));
+	});
+
+	it('signs the attachment bytes as well as to, subject and body', () => {
+		const fields = { tool: 'mail_create_draft', to: ['Sam <sam@example.com>', 'lee@example.com'], subject: 'Report £', body: 'Hi\n\nBrad ✓', attachmentSha256: sha256Hex(PDF), expiry: 1760000000, nonce: '00112233aabbccdd' };
+		assert.strictEqual(approvalToken(KEY, fields), '3b592db0cadcc13793f019d993a96ab3d737fd4c5abaec5369f7612e60b5d6f7', 'vector computed in Python'); // gitleaks:allow (expected HMAC)
+		const request = draft();
+		const server = { attachmentSha256: sha256Hex(PDF) };
+		assert.strictEqual(checkApproval(Buffer.from(KEY), request, new NonceStore(), NOW_S, server), null);
+		const mismatch = { status: 403, error: 'approval token does not match' };
+		assert.deepStrictEqual(checkApproval(Buffer.from(KEY), request, new NonceStore(), NOW_S, { attachmentSha256: sha256Hex(Buffer.from('other bytes')) }), mismatch, 'changed attachment');
+		assert.deepStrictEqual(checkApproval(Buffer.from(KEY), { ...request, attachmentSha256: sha256Hex(Buffer.from('other bytes')) }, new NonceStore(), NOW_S, server), null, 'a hash in the request is ignored');
+		for (const change of [{ body: 'Hi' }, { subject: 'Other' }, { to: ['eve@example.com'] }, { tool: 'mail_send_reply' }]) {
+			assert.deepStrictEqual(checkApproval(Buffer.from(KEY), { ...request, ...change }, new NonceStore(), NOW_S, server), mismatch, JSON.stringify(change));
+		}
+	});
+
+	it('creates the draft and attaches the file with two Graph calls and no send', async () => {
+		const graphApiClient = { acquireToken: async () => ({ success: true, token: fakeJwt({ scp: 'Mail.Read Mail.ReadWrite' }) }), makeRequest: async () => assert.fail('makeRequest not used') };
+		const stub = withFetch((url, init, n) => (n === 1 ? response(201, { id: 'AAMkDRAFT=', webLink: 'https://outlook.office365.com/owa/?ItemID=AAMkDRAFT' }) : response(201, { id: 'att1' })));
+		try {
+			const result = await createMailDraft({ graphApiClient }, { to: ['Sam <sam@example.com>', 'lee@example.com'], subject: 'Report', body: 'Hi\n\nBrad', attachment: { name: 'report.pdf', bytes: PDF } });
+			assert.deepStrictEqual(result, { status: 200, id: 'AAMkDRAFT=', webLink: 'https://outlook.office365.com/owa/?ItemID=AAMkDRAFT' });
+			assert.strictEqual(stub.calls.length, 2);
+			const [create, attach] = stub.calls;
+			assert.strictEqual(create.url, 'https://graph.microsoft.com/v1.0/me/messages');
+			assert.strictEqual(create.init.method, 'POST');
+			assert.match(create.init.headers.Authorization, /^Bearer /);
+			assert.deepStrictEqual(create.body, {
+				subject: 'Report',
+				body: { contentType: 'HTML', content: '<p>Hi</p><p>Brad</p>' },
+				toRecipients: [{ emailAddress: { name: 'Sam', address: 'sam@example.com' } }, { emailAddress: { address: 'lee@example.com' } }],
+			});
+			assert.strictEqual(attach.url, 'https://graph.microsoft.com/v1.0/me/messages/AAMkDRAFT%3D/attachments');
+			assert.strictEqual(attach.init.method, 'POST');
+			assert.deepStrictEqual(attach.body, { '@odata.type': '#microsoft.graph.fileAttachment', name: 'report.pdf', contentType: 'application/pdf', contentBytes: PDF.toString('base64') });
+			assert.ok(stub.calls.every((c) => !/\/send(\b|$)|outlook\.office/.test(c.url)), 'no send call and no Outlook REST');
+		} finally {
+			stub.restore();
+		}
+	});
+
+	it('refuses a file over 3 MB before any call, and reports a draft left without its attachment', async () => {
+		const graphApiClient = { acquireToken: async () => ({ success: true, token: fakeJwt({ scp: 'Mail.ReadWrite' }) }) };
+		const stub = withFetch((url, init, n) => (n === 1 ? response(201, { id: 'D1', webLink: 'w' }) : response(413, { error: { message: 'too big' } })));
+		try {
+			const big = await createMailDraft({ graphApiClient }, { to: ['a@b.co'], subject: 's', body: 'b', attachment: { name: 'x.bin', bytes: Buffer.alloc(3 * 1024 * 1024 + 1) } });
+			assert.deepStrictEqual(big, { status: 400, error: 'attachment is over 3 MB' });
+			assert.strictEqual(stub.calls.length, 0);
+			const partial = await createMailDraft({ graphApiClient }, { to: ['a@b.co'], subject: 's', body: 'b', attachment: { name: 'x.bin', bytes: PDF } });
+			assert.deepStrictEqual(partial, { status: 502, error: 'draft D1 created without its attachment: Graph HTTP 413: too big' });
+			assert.strictEqual(stub.calls[1].body.contentType, 'application/octet-stream');
+		} finally {
+			stub.restore();
+		}
+	});
+
+	it('needs Mail.ReadWrite on the Graph token', async () => {
+		const graphApiClient = { acquireToken: async () => ({ success: true, token: fakeJwt({ scp: 'Mail.Read' }) }) };
+		const stub = withFetch(() => assert.fail('no call expected'));
+		try {
+			const result = await createMailDraft({ graphApiClient }, { to: ['a@b.co'], subject: 's', body: 'b', attachment: { name: 'x.pdf', bytes: PDF } });
+			assert.strictEqual(result.status, 501);
+		} finally {
+			stub.restore();
+		}
+	});
+
+	it('goes through the service: shape, approval over the file, then the draft sender', async () => {
+		const seen = [];
+		const service = new SendService({
+			port: 0,
+			secret: KEY,
+			now: () => NOW_S * 1000,
+			attachmentRoots: roots,
+			senders: {
+				teams: async () => assert.fail('teams'),
+				mail: async () => assert.fail('mail'),
+				draft: async (r) => { seen.push(r); return { status: 200, id: 'D1', webLink: 'https://outlook/D1' }; },
+			},
+		});
+		await service.initialize();
+		try {
+			assert.deepStrictEqual(await service.handle(draft()), { status: 200, body: { ok: true, id: 'D1', webLink: 'https://outlook/D1' } });
+			assert.deepStrictEqual(seen[0].to, ['Sam <sam@example.com>']);
+			assert.strictEqual(seen[0].attachment.name, 'report.pdf');
+			assert.ok(seen[0].attachment.bytes.equals(PDF));
+			assert.strictEqual((await service.handle(draft())).status, 403, 'nonce reuse');
+			const swapped = { ...draft({ nonce: '0000000000000002' }), attachment_path: path.join(roots[1], 'notes.txt') };
+			assert.deepStrictEqual(await service.handle(swapped), { status: 403, body: { error: 'approval token does not match' } });
+			const escaped = { ...draft({ nonce: '0000000000000003' }), attachment_path: escape };
+			assert.deepStrictEqual(await service.handle(escaped), { status: 400, body: { error: 'attachment is outside the allowed folders' } });
+			assert.strictEqual(seen.length, 1);
+		} finally {
+			await service.shutdown();
+		}
 	});
 });
 

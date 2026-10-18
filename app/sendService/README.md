@@ -1,6 +1,7 @@
 # Send service
 
-A local HTTP endpoint that sends one Teams chat message or one Outlook mail reply per request, and only
+A local HTTP endpoint that sends one Teams chat message or one Outlook mail reply, or creates one
+Outlook draft with an attachment, per request, and only
 with an approval token minted by a companion app when the user presses Send. It is the one write path
 in this fork. The MCP server (`app/mcp/`) and the chat service client (`app/chatService/`) stay
 read-only, and tests check that neither loads this module.
@@ -52,6 +53,19 @@ anything else `{"error": "<short text>"}` with the status. Upstream failures are
 Plain text becomes HTML by escaping `& < > "`, one `<p>` per blank line separated paragraph and `<br>`
 for single line breaks.
 
+## Drafts
+
+`mail_create_draft` takes `to` (one or more), `subject`, `body` and `attachment_path` instead of
+`target`, `cc`. The path must resolve, symlinks followed, to a file of 3 MB or less under
+`~/Projects/Personal/work-assistant/attachments/` or `tmp/` (`ATTACHMENT_ROOTS` in `gate.js`). The token
+signs `tool`, `sha256hex(to joined by "\n")`, `sha256hex(subject)`, `sha256hex(body)`,
+`sha256hex(attachment bytes)`, `expiry` and `nonce`, joined by `"\n"`. The service hashes the bytes it
+uploads, so a file changed after approval fails with 403.
+
+`createMailDraft` uses only the Graph token (`Mail.ReadWrite`, no `Mail.Send`): `POST /me/messages`, then
+`POST /me/messages/{id}/attachments` with a `#microsoft.graph.fileAttachment`. It returns `id` and
+`webLink`, and never calls a send endpoint or the Outlook token.
+
 ## Logging
 
 One line per request: tool, status and the target cut to 30 characters. Never the body, recipients or
@@ -60,5 +74,5 @@ a token.
 ## Tests
 
 `tests/unit/sendService.test.js`: HMAC against a vector computed in Python, expiry window, nonce reuse,
-rate cap, HTML conversion, recipient parsing, both sends against stubbed `fetch` and clients, the HTTP
+rate cap, HTML conversion, recipient parsing, both sends and the draft (attachment allowlist, traversal, two Graph calls and no send) against stubbed `fetch` and clients, the HTTP
 layer, secret file checks, and the guard that keeps this module out of `app/mcp` and `app/chatService`.

@@ -3,8 +3,8 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const logger = require('electron-log');
-const { TOOLS, NonceStore, RateLimiter, checkShape, checkApproval } = require('./gate');
-const { checkTarget, sendTeamsMessage, sendMailReply, OutlookTokenSource } = require('./senders');
+const { TOOLS, ATTACHMENT_ROOTS, NonceStore, RateLimiter, checkShape, checkApproval, readAttachment } = require('./gate');
+const { checkTarget, sendTeamsMessage, sendMailReply, createMailDraft, OutlookTokenSource } = require('./senders');
 
 const DEFAULT_SECRET_PATH = path.join(os.homedir(), '.config', 'work-assistant', 'send-secret');
 const DEFAULT_PORT = 3041;
@@ -33,7 +33,7 @@ function loadSecret(secretPath) {
 }
 
 /**
- * Gated send endpoint. Sends one Teams chat message or one mail reply per request, and only with an
+ * Gated send endpoint. Sends one Teams chat message or one mail reply, or creates one mail draft, per request, and only with an
  * approval token minted by the work-assistant bridge when the user presses Send in the panel.
  * Listens on 127.0.0.1 only. Kept apart from app/mcp so the MCP stays read-only.
  */
@@ -46,16 +46,19 @@ class SendService {
   #rate = new RateLimiter();
   #senders;
   #now;
+  #attachmentRoots;
 
   /**
    * @param {object} [options]
    * @param {string} [options.secretPath]
    * @param {number} [options.port]
    * @param {Buffer|string} [options.secret] - Use this secret instead of reading the file (tests)
-   * @param {object} [options.senders] - { teams(request), mail(request) } returning { status, id?, error? }
+   * @param {object} [options.senders] - { teams(request), mail(request), draft(request) } returning { status, id?, webLink?, error? }
    * @param {() => number} [options.now] - Clock in milliseconds
+   * @param {string[]} [options.attachmentRoots] - Folders mail_create_draft may attach from (tests)
    */
-  constructor({ secretPath = DEFAULT_SECRET_PATH, port = DEFAULT_PORT, secret, senders, now = Date.now } = {}) {
+  constructor({ secretPath = DEFAULT_SECRET_PATH, port = DEFAULT_PORT, secret, senders, now = Date.now, attachmentRoots = ATTACHMENT_ROOTS } = {}) {
+    this.#attachmentRoots = attachmentRoots;
     this.#secretPath = secretPath;
     this.#port = port;
     this.#secret = secret ? Buffer.from(secret) : null;
@@ -124,6 +127,7 @@ class SendService {
     return {
       teams: (request) => sendTeamsMessage({ chatServiceClient, getDisplayName }, request),
       mail: (request) => sendMailReply({ graphApiClient, outlookTokens }, request),
+      draft: (request) => createMailDraft({ graphApiClient }, request),
     };
   }
 
@@ -137,20 +141,34 @@ class SendService {
     const tool = TOOLS.has(request?.tool) ? request.tool : 'unknown';
     const target = typeof request?.target === 'string' ? request.target.slice(0, 30) : '';
     logger.info('[SEND] Send request', { tool, status: result.status, target });
-    if (result.status === 200) return { status: 200, body: { ok: true, id: result.id ?? null } };
+    if (result.status === 200) {
+      const body = { ok: true, id: result.id ?? null };
+      if (result.webLink) body.webLink = result.webLink;
+      return { status: 200, body };
+    }
     return { status: result.status, body: { error: result.error } };
   }
 
   async #check(request) {
-    const shape = checkShape(request);
+    const shape = checkShape(request, { attachmentRoots: this.#attachmentRoots });
     if (shape) return shape;
     const target = checkTarget(request.tool, request.target, request.to, request.cc);
     if (target) return target;
+    // The file is read once here: the HMAC covers these bytes and the draft gets the same bytes.
+    let attachment = null;
+    if (request.tool === 'mail_create_draft') {
+      attachment = readAttachment(request.attachment_path, this.#attachmentRoots);
+      if (attachment.error) return attachment;
+    }
     const nowMs = this.#now();
-    const approval = checkApproval(this.#secret, request, this.#nonces, Math.floor(nowMs / 1000));
+    const approval = checkApproval(this.#secret, request, this.#nonces, Math.floor(nowMs / 1000), { attachmentSha256: attachment?.sha256 });
     if (approval) return approval;
     if (!this.#rate.take(nowMs)) return { status: 429, error: 'send limit reached (10 an hour)' };
     try {
+      if (request.tool === 'mail_create_draft') {
+        const { to, subject, body } = request;
+        return await this.#senders.draft({ to, subject, body, attachment: { name: attachment.name, bytes: attachment.bytes } });
+      }
       return request.tool === 'teams_send_message' ? await this.#senders.teams(request) : await this.#senders.mail(request);
     } catch (error) {
       return { status: 502, error: error.message };
