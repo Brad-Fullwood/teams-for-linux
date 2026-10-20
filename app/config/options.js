@@ -751,6 +751,7 @@ module.exports = {
               maxWidth: 1920,
               maxHeight: 1080,
               maxBitrate: 8000000,
+              remoteBandwidthKbps: 0,
             },
             autoAdjustAspectRatio: { enabled: false },
           },
@@ -843,6 +844,11 @@ module.exports = {
           "camera.sender.maxBitrate": {
             type: "number",
             describe: "Maximum outgoing camera bitrate in bits per second.",
+          },
+          "camera.sender.remoteBandwidthKbps": {
+            type: "number",
+            describe:
+              "Rewrite the b=AS bandwidth line in the remote SDP to this many kbps (0 leaves it as sent by the service).",
           },
           "camera.autoAdjustAspectRatio.enabled": {
             type: "boolean",

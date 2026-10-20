@@ -12,6 +12,11 @@
  * Inactive encodings keep their values. Chromium rejects parameters where
  * scaleResolutionDownTo is set on some encodings but not others, so when no
  * encoding carries it the inactive ones get a 640x360 value as well.
+ *
+ * The remote SDP from the Teams service carries b=AS:3920 on every video
+ * section, which caps Chromium's outgoing bandwidth estimate at 3.92 Mbps.
+ * When remoteBandwidthKbps is above 0, setRemoteDescription rewrites every
+ * b=AS line to that value and every b=TIAS line to the same value in bps.
  */
 
 const DEFAULT_MAX_WIDTH = 1920;
@@ -24,6 +29,7 @@ const applyCameraSendResolutionPatch = function (senderConfig) {
   const maxWidth = senderConfig.maxWidth || DEFAULT_MAX_WIDTH;
   const maxHeight = senderConfig.maxHeight || DEFAULT_MAX_HEIGHT;
   const maxBitrate = senderConfig.maxBitrate || DEFAULT_MAX_BITRATE;
+  const remoteBandwidthKbps = senderConfig.remoteBandwidthKbps || 0;
 
   // Screen-share tracks expose displaySurface in their settings
   function isCameraTrack(track) {
@@ -109,10 +115,52 @@ const applyCameraSendResolutionPatch = function (senderConfig) {
     "[CAMERA_SEND_RESOLUTION] Patched RTCPeerConnection.addTransceiver"
   );
 
+  if (remoteBandwidthKbps > 0) {
+    patchRemoteBandwidth(remoteBandwidthKbps);
+  }
+
   console.debug(
     `[CAMERA_SEND_RESOLUTION] Successfully initialized - cap: ${maxWidth}x${maxHeight} at ${maxBitrate} bps`
   );
 };
+
+// Rewrites b=AS and b=TIAS in the remote SDP. A description without an sdp
+// string (implicit rollback) and any failure pass through unchanged.
+function patchRemoteBandwidth(kbps) {
+  const originalSetRemoteDescription =
+    RTCPeerConnection.prototype.setRemoteDescription;
+  RTCPeerConnection.prototype.setRemoteDescription =
+    function setRemoteDescription(description, ...rest) {
+      try {
+        const sdp = description?.sdp;
+        if (typeof sdp === "string" && /b=(AS|TIAS):\d+/.test(sdp)) {
+          const replaced = [];
+          const newSdp = sdp
+            .replaceAll(/b=AS:(\d+)/g, (match) => {
+              replaced.push(match);
+              return `b=AS:${kbps}`;
+            })
+            .replaceAll(/b=TIAS:(\d+)/g, (match) => {
+              replaced.push(match);
+              return `b=TIAS:${kbps * 1000}`;
+            });
+          console.debug(
+            `[CAMERA_SEND_RESOLUTION] Remote SDP bandwidth ${[...new Set(replaced)].join(", ")} rewritten to b=AS:${kbps}`
+          );
+          description = { type: description.type, sdp: newSdp };
+        }
+      } catch (error) {
+        console.error(
+          "[CAMERA_SEND_RESOLUTION] Failed to rewrite remote SDP bandwidth, passing original through:",
+          error
+        );
+      }
+      return originalSetRemoteDescription.call(this, description, ...rest);
+    };
+  console.debug(
+    "[CAMERA_SEND_RESOLUTION] Patched RTCPeerConnection.setRemoteDescription"
+  );
+}
 
 /**
  * Initialize the cameraSendResolution tool

@@ -815,7 +815,8 @@
             "enabled": false,
             "maxWidth": 1920,
             "maxHeight": 1080,
-            "maxBitrate": 8000000
+            "maxBitrate": 8000000,
+            "remoteBandwidthKbps": 0
           },
           "autoAdjustAspectRatio": {
             "enabled": false
@@ -930,6 +931,12 @@
           "type": "number",
           "default": 8000000,
           "description": "Maximum outgoing camera bitrate in bits per second."
+        },
+        {
+          "path": "camera.sender.remoteBandwidthKbps",
+          "type": "number",
+          "default": 0,
+          "description": "Rewrite the b=AS bandwidth line in the remote SDP to this many kbps (0 leaves it as sent by the service)."
         },
         {
           "path": "camera.autoAdjustAspectRatio.enabled",
