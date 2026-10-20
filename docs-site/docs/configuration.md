@@ -28,6 +28,7 @@ For a complete, always-up-to-date list of every option generated directly from t
   - [Virtual Backgrounds](#virtual-backgrounds)
   - [URL & Protocol Handling](#url--protocol-handling)
   - [Keyboard Shortcuts](#keyboard-shortcuts)
+  - [D-Bus Integration](#d-bus-integration)
   - [MQTT Integration](#mqtt-integration)
   - [Microsoft Graph API](#microsoft-graph-api)
   - [Quick Chat](#quick-chat)
@@ -56,9 +57,13 @@ Create a `config.json` file with your desired settings:
 
 ```json
 {
-  "closeAppOnCross": true,
+  "window": {
+    "closeOnCross": true
+  },
   "disableNotifications": false,
-  "customCSSName": "compactDark"
+  "appearance": {
+    "cssName": "compactDark"
+  }
 }
 ```
 
@@ -89,42 +94,134 @@ Each option's **Apply** mode (whether a change takes effect immediately or after
 
 ## Configuration Options Reference
 
+### Renamed options
+
+Options are moving from flat top-level names to nested namespaces, following the
+convention in [ADR-025](development/adr/025-config-option-naming-convention.md).
+Both spellings work: pick the nested name for new configuration, and the tables
+below mark each old name as deprecated and point at its replacement. Where you
+set both, the nested name wins.
+
+The old names keep working until **2.30.0**, and using one logs a single
+aggregated warning at startup naming every option to move.
+
+:::note
+During this transition the nested names are read from `config.json` only.
+Command-line flags and environment variables keep using the flat name, so
+`--partition nopersist` still works and `--app.partition nopersist` is silently
+ignored. The examples below use whichever spelling actually applies.
+:::
+
 ### Application Core
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `url` | `string` | `"https://teams.cloud.microsoft"` | Microsoft Teams URL |
-| `appTitle` | `string` | `"Microsoft Teams"` | Text to be suffixed with page title |
-| `partition` | `string` | `"persist:teams-4-linux"` | BrowserWindow webpreferences partition |
+| `app.url` | `string` | `"https://teams.cloud.microsoft"` | Microsoft Teams URL |
+| `url` | `string` | `"https://teams.cloud.microsoft"` | Deprecated, use `app.url` |
+| `app.title` | `string` | `"Microsoft Teams"` | Replaces 'Microsoft Teams' in the window title (when changed from the default) and is used as the tray tooltip |
+| `appTitle` | `string` | `"Microsoft Teams"` | Deprecated, use `app.title` |
+| `app.partition` | `string` | `"persist:teams-4-linux"` | BrowserWindow webpreferences partition |
+| `partition` | `string` | `"persist:teams-4-linux"` | Deprecated, use `app.partition` |
 
 ### Window & UI Behavior
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `frame` | `boolean` | `true` | Specify false to create a Frameless Window |
-| `menubar` | `string` | `"auto"` | Menu bar behaviour. Choices: `auto`, `visible`, `hidden` |
-| `minimized` | `boolean` | `false` | Start the application minimized |
-| `minimizeOnClose` | `boolean` | `false` | Minimize the window when clicking the close (X) cross instead of hiding it to the tray (ignored when `closeAppOnCross` is true) |
-| `closeAppOnCross` | `boolean` | `false` | Close the app when clicking the close (X) cross |
-| `alwaysOnTop` | `boolean` | `true` | Keep the pop-out window always on top of other windows |
-| `class` | `string` | `null` | Custom value for the WM_CLASS property |
+| `window.frame` | `boolean` | `true` | Specify false to create a Frameless Window |
+| `frame` | `boolean` | `true` | Deprecated, use `window.frame` |
+| `window.menubar` | `string` | `"auto"` | Menu bar behaviour. Choices: `auto`, `visible`, `hidden` |
+| `menubar` | `string` | `"auto"` | Deprecated, use `window.menubar` |
+| `window.minimized` | `boolean` | `false` | Start the application minimized |
+| `minimized` | `boolean` | `false` | Deprecated, use `window.minimized` |
+| `window.minimizeOnClose` | `boolean` | `false` | Minimize the window when clicking the close (X) cross instead of hiding it to the tray (ignored when `window.closeOnCross` is true) |
+| `minimizeOnClose` | `boolean` | `false` | Deprecated, use `window.minimizeOnClose` |
+| `window.closeOnCross` | `boolean` | `false` | Close the app when clicking the close (X) cross |
+| `closeAppOnCross` | `boolean` | `false` | Deprecated, use `window.closeOnCross` |
+| `window.alwaysOnTop` | `boolean` | `true` | Keep the pop-out window always on top of other windows |
+| `alwaysOnTop` | `boolean` | `true` | Deprecated, use `window.alwaysOnTop` |
+| `window.class` | `string` | `null` | Custom value for the WM_CLASS property |
+| `class` | `string` | `null` | Deprecated, use `window.class` |
 
 ### Theming & Appearance
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `customCSSName` | `string` | `""` | Custom CSS name. Options: "compactDark", "compactLight", "tweaks", "condensedDark", "condensedLight" |
-| `customCSSLocation` | `string` | `""` | Custom CSS styles file location |
-| `followSystemTheme` | `boolean` | `false` | Follow the operating-system dark/light theme preference. Set `true` to drive Teams's theme from the OS preference. |
+| `appearance.cssName` | `string` | `""` | Packaged CSS theme (`compactDark`, `compactLight`, `tweaks`, `condensedDark`, `condensedLight`) or discovered user theme (`custom:<id>`) |
+| `customCSSName` | `string` | `""` | Deprecated, use `appearance.cssName` |
+| `appearance.cssLocation` | `string` | `""` | Custom CSS styles file location |
+| `customCSSLocation` | `string` | `""` | Deprecated, use `appearance.cssLocation` |
+| `appearance.followSystemTheme` | `boolean` | `false` | Follow the operating-system dark/light theme preference. Set `true` to drive Teams's theme from the OS preference. |
+| `followSystemTheme` | `boolean` | `false` | Deprecated, use `appearance.followSystemTheme` |
+
+#### Selecting a CSS Theme
+
+Open the application's **Settings → Theme** menu to select **Default**, a **Built-in** theme, or a discovered **Custom** theme. The menu displays human-readable theme names and saves your choice in `config.json`, preserving unrelated settings. Theme changes require a restart; the app offers to restart after saving, or you can restart later.
+
+CSS themes style the Teams web interface, including its iframe content. They do not change Teams' own dark/light preference. Choose the appropriate appearance in Teams itself, or use `appearance.followSystemTheme` to follow your desktop preference.
+
+#### Installing a User Theme
+
+Place each theme in its own folder under `themes` inside the application's [configuration directory](#configuration-locations). Use **Settings → Theme → Open themes folder** to open that directory in your file manager.
+
+```text
+themes/
+  my-theme/
+    theme.json
+    theme.css
+```
+
+The minimum `theme.json` is:
+
+```json
+{
+  "id": "my-theme",
+  "name": "My Theme",
+  "css": "theme.css"
+}
+```
+
+The `id` identifies the theme across restarts, `name` is the label shown in the menu, and `css` is the relative path to its CSS file. IDs must start with a letter or digit and contain only letters, digits, dots, underscores, or hyphens. Keep the `id` stable when renaming a theme or its folder. Optional string fields `author`, `version`, and `description` provide additional metadata. Metadata files are limited to 64 KiB.
+
+A minimal `theme.css` could contain:
+
+```css
+:root {
+  scrollbar-color: #657080 #20252c;
+}
+```
+
+Restart the app after installing, removing, or updating a theme. Discovery reads only immediate theme folders; there is no filesystem watcher or online theme service. Once discovered, **My Theme** appears under **Custom**, and selecting it saves `appearance.cssName` as `custom:my-theme`. Switching themes does not require manually editing the configuration file.
+
+For Flatpak, the directory is:
+
+```text
+~/.var/app/com.github.IsmaelMartinez.teams_for_linux/config/teams-for-linux/themes/
+```
+
+#### Theme Validation and Compatibility
+
+Themes are local CSS files only; no JavaScript or executable theme code is loaded. Metadata must be valid JSON with `id`, `name`, and `css`. The CSS file must exist inside its theme folder. Absolute paths, parent-directory traversal, and symlinks escaping the theme folder are rejected.
+
+Theme CSS may load remote resources through `@import` and `url()`, so only install themes from trusted sources.
+
+Invalid themes are ignored with concise warnings and never prevent startup. Built-in IDs are reserved. If several custom folders use the same ID, the first valid folder in sorted folder-name order wins. If a selected custom theme is missing or invalid, the app warns and uses the default appearance while retaining the saved selection, so reinstalling the theme restores it on the next restart.
+
+Existing built-in names such as `compactDark` continue to work without migration. `appearance.cssName` takes precedence over `appearance.cssLocation`; a missing selected custom theme falls back to Default rather than loading a different stylesheet from `cssLocation`.
+
+Direct CSS files remain supported through `appearance.cssLocation` and its legacy alias `customCSSLocation`. When a location is configured, **Custom CSS file** in the Theme menu lets you reuse that stylesheet. Choosing a built-in or discovered theme preserves the location for reuse; choosing **Default** clears both theme settings. Legacy `customCSSName` continues to work, with the nested `appearance` values taking precedence as described in [Renamed options](#renamed-options).
 
 ### Tray Icon
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `trayIconEnabled` | `boolean` | `true` | Enable tray icon |
-| `appIcon` | `string` | `""` | Custom app icon (PNG) for the tray, the window icon on Windows and Linux, and the dock on macOS. Also settable from the App Icon menu |
-| `appIconType` | `string` | `"default"` | Type of tray icon. Choices: `default`, `light`, `dark` |
-| `useMutationTitleLogic` | `boolean` | `true` | Use MutationObserver to update counter from title |
+| `tray.enabled` | `boolean` | `true` | Enable tray icon |
+| `trayIconEnabled` | `boolean` | `true` | Deprecated, use `tray.enabled` |
+| `tray.icon` | `string` | `""` | Custom app icon (PNG) for the tray, the window icon on Windows and Linux, and the dock on macOS. Also settable from the App Icon menu |
+| `appIcon` | `string` | `""` | Deprecated, use `tray.icon` |
+| `tray.iconType` | `string` | `"default"` | Type of tray icon. Choices: `default`, `light`, `dark` |
+| `appIconType` | `string` | `"default"` | Deprecated, use `tray.iconType` |
+| `tray.useMutationTitleLogic` | `boolean` | `true` | Use MutationObserver to update counter from title |
+| `useMutationTitleLogic` | `boolean` | `true` | Deprecated, use `tray.useMutationTitleLogic` |
 | `disableBadgeCount` | `boolean` | `false` | Disable the badge counter on the taskbar/dock icon |
 
 ### Notification System
@@ -145,9 +242,12 @@ Each option's **Apply** mode (whether a change takes effect immediately or after
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `enableIncomingCallToast` | `boolean` | `false` | Enable incoming call toast |
-| `incomingCallCommand` | `string` | `null` | Command or executable to run when an incoming call is detected |
-| `incomingCallCommandArgs` | `array` | `[]` | Arguments to pass to the incoming call command |
+| `incomingCalls.toast` | `boolean` | `false` | Enable incoming call toast |
+| `enableIncomingCallToast` | `boolean` | `false` | Deprecated, use `incomingCalls.toast` |
+| `incomingCalls.command` | `string` | `null` | Command or executable to run when an incoming call is detected |
+| `incomingCallCommand` | `string` | `null` | Deprecated, use `incomingCalls.command` |
+| `incomingCalls.commandArgs` | `array` | `[]` | Arguments to pass to the incoming call command |
+| `incomingCallCommandArgs` | `array` | `[]` | Deprecated, use `incomingCalls.commandArgs` |
 
 > [!NOTE]
 > See [Incoming Call Command](#incoming-call-command) for detailed usage examples.
@@ -367,7 +467,7 @@ Requires the `fido2-tools` system package: `sudo apt install fido2-tools` (Debia
 | `auth.webauthn.debug` | `boolean` | `false` | Enable verbose WebAuthn diagnostic logging (useful for beta testers troubleshooting key registration) |
 | `auth.webauthn.extraOrigins` | `array` | `[]` | Extra sign-in origins allowed to use hardware keys, in addition to the built-in Microsoft login origins |
 
-Interception is limited to the Microsoft login origins (`https://login.microsoftonline.com`, `https://login.microsoft.com`, `https://login.live.com`). If your tenant is federated and the key prompt is served by your own identity provider, the ceremony is blocked and the log shows `[WEBAUTHN] Blocked request { reason: 'origin-not-allowed' }`. Add that origin to `auth.webauthn.extraOrigins` and restart:
+Interception is limited to the Microsoft login origins (`https://login.microsoftonline.com`, `https://login.microsoft.com`, `https://login.live.com`). If your tenant is federated and the key prompt is served by your own identity provider, the ceremony is blocked and the log shows `[WEBAUTHN] Blocked request { reason: 'origin-not-allowed' }`, or, when the identity provider runs in an embedded frame, `[WEBAUTHN] Skipped a subframe outside the login allowlist` and no key prompt at all. The log never names the origin, since it identifies your tenant. To find it, sign in at teams.microsoft.com in a regular browser with its developer tools open, and note the scheme and host of the request that loads the page asking for your key (the address bar shows only the outer page when that step is embedded). Add that origin to `auth.webauthn.extraOrigins` and restart:
 
 ```json
 {
@@ -540,6 +640,7 @@ Media settings are organized under the `media` configuration object with subgrou
 | `media.camera.sender.maxBitrate` | `number` | `8000000` | Maximum outgoing camera bitrate in bits per second |
 | `media.camera.autoAdjustAspectRatio.enabled` | `boolean` | `false` | Fixes camera video stretching when moving Teams between monitors with different orientations by reapplying proper aspect ratio constraints |
 | `media.video.menuEnabled` | `boolean` | `false` | Enable menu entry for controlling video elements (PiP mode, video controls) |
+| `media.documentPictureInPicture` | `boolean` | `true` | Let the Teams web Call Monitor ([MC1462921](https://mc.merill.net/message/MC1462921)) show its floating call controls in a small always-on-top window, capped at 800×600. Electron's own Document Picture-in-Picture window closes as soon as it opens, so this replaces the API with a popup the app allows. Set to `false` to fall back to Electron's native API, which leaves the Call Monitor broken. Wayland compositors may not keep the window on top |
 
 **Example Media Configuration:**
 ```json
@@ -570,9 +671,12 @@ Media settings are organized under the `media` configuration object with subgrou
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `isCustomBackgroundEnabled` | `boolean` | `false` | Enable custom background feature |
-| `customBGServiceBaseUrl` | `string` | `"http://localhost"` | Base URL of the server which provides custom background images |
-| `customBGServiceConfigFetchInterval` | `number` | `0` | Poll interval in seconds to download background service config |
+| `customBackground.enabled` | `boolean` | `false` | Enable custom background feature |
+| `isCustomBackgroundEnabled` | `boolean` | `false` | Deprecated, use `customBackground.enabled` |
+| `customBackground.serviceBaseUrl` | `string` | `"http://localhost"` | Base URL of the server which provides custom background images |
+| `customBGServiceBaseUrl` | `string` | `"http://localhost"` | Deprecated, use `customBackground.serviceBaseUrl` |
+| `customBackground.configFetchInterval` | `number` | `0` | Poll interval in seconds to download background service config |
+| `customBGServiceConfigFetchInterval` | `number` | `0` | Deprecated, use `customBackground.configFetchInterval` |
 
 ### Custom Stickers
 
@@ -591,10 +695,13 @@ A floating sticker panel that lists image files from a local folder and pastes t
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `defaultURLHandler` | `string` | `""` | Default application to open HTTP URLs |
-| `meetupJoinRegEx` | `string` | `^https://teams\\.(?:microsoft\\.com|live\\.com|cloud\\.microsoft)/(v2/\\?meetingjoin=|meet/|l/(?:app|call|channel|chat|entity|file|meet(?:ing|up-join)|message|task|team)/)` | Regex for Teams meetup-join and related links |
+| `urlHandling.defaultHandler` | `string` | `""` | Default application to open HTTP URLs |
+| `defaultURLHandler` | `string` | `""` | Deprecated, use `urlHandling.defaultHandler` |
+| `urlHandling.meetupJoinRegEx` | `string` | `^https://teams\\.(?:microsoft\\.com\|live\\.com\|cloud\\.microsoft)/(v2/\\?meetingjoin=\|meet/\|l/(?:app\|call\|channel\|chat\|entity\|file\|meet(?:ing\|up-join)\|message\|task\|team)/)` | Regex for Teams meetup-join and related links |
+| `meetupJoinRegEx` | `string` | `^https://teams\\.(?:microsoft\\.com\|live\\.com\|cloud\\.microsoft)/(v2/\\?meetingjoin=\|meet/\|l/(?:app\|call\|channel\|chat\|entity\|file\|meet(?:ing\|up-join)\|message\|task\|team)/)` | Deprecated, use `urlHandling.meetupJoinRegEx` |
 | `msTeamsProtocols` | `object` | `{ v1: "^msteams:/(?:meet/\|l/(?:app\|call\|channel\|chat\|entity\|file\|meet(?:ing\|up-join)\|message\|task\|team)/)", v2: "^msteams://teams\\.(?:microsoft\\.com\|live\\.com\|cloud\\.microsoft)/(?:meet/\|l/(?:app\|call\|channel\|chat\|entity\|file\|meet(?:ing\|up-join)\|message\|task\|team)/)" }` | Regular expressions for Microsoft Teams protocol links (v1 = legacy `msteams:` scheme, v2 = host-based `msteams://` scheme) |
-| `onNewWindowOpenMeetupJoinUrlInApp` | `boolean` | `true` | Open meetupJoinRegEx URLs in the app instead of default browser |
+| `urlHandling.openMeetupJoinInApp` | `boolean` | `true` | Open `urlHandling.meetupJoinRegEx` URLs in the app instead of default browser |
+| `onNewWindowOpenMeetupJoinUrlInApp` | `boolean` | `true` | Deprecated, use `urlHandling.openMeetupJoinInApp` |
 
 ### Keyboard Shortcuts
 
@@ -604,6 +711,17 @@ A floating sticker panel that lists image files from a local folder and pastes t
 | `shortcuts.disableWhileFocused` | `array` | `[]` | Array of global shortcuts to disable while app is in focus |
 | `globalShortcuts` | `array` | `[]` | Deprecated, use `shortcuts.global` |
 | `disableGlobalShortcuts` | `array` | `[]` | Deprecated, use `shortcuts.disableWhileFocused` |
+
+### D-Bus Integration
+
+The optional Linux session-bus interface exposes Teams controls and observed presence, call, and media state. Changes require an application restart.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `dbusControl.enabled` | `boolean` | `false` | Enable the local D-Bus interface |
+| `dbusControl.busName` | `string` | `""` | Service name for this instance. Empty uses the Flatpak app ID or `com.github.IsmaelMartinez.teams_for_linux`. Invalid names disable the service. |
+
+For separately launched profiles, set a different `busName` in each profile's `config.json`, such as `com.github.IsmaelMartinez.teams_for_linux.Work` and `com.github.IsmaelMartinez.teams_for_linux.Personal`. The object path and interface remain the same. See the [D-Bus control guide](development/dbus-control.md) for examples, name requirements, and sandbox limitations.
 
 ### MQTT Integration
 
@@ -655,10 +773,11 @@ When MQTT is enabled, the following topics are automatically published:
 | `\{topicPrefix\}/in-call` | `"true"` or `"false"` | Active call state (connected/disconnected). Uses WebRTC fallback for reliable detection even from popup windows. |
 | `\{topicPrefix\}/camera` | `"true"` or `"false"` | Camera on/off state (monitors video sender track via WebRTC, filters out screen-sharing tracks) |
 | `\{topicPrefix\}/microphone` | `"speaking"` \| `"silent"` \| `"muted"` \| `"off"` | Microphone state derived from the WebRTC speaking-indicator. `speaking` = audio is being transmitted, `silent` = mic open but quiet, `muted` = Teams has zeroed the audio signal, `off` = not in a call. Activates when `mqtt.enabled` is true (no separate toggle required). |
-| `\{topicPrefix\}/incoming-call` | `"true"` or `"false"` | Incoming call ringing state. Fires before user accepts. Parity with `incomingCallCommand`. Covers 1:1 ring-type calls. |
+| `\{topicPrefix\}/incoming-call` | `"true"` or `"false"` | Incoming call ringing state. Fires before user accepts. Parity with `incomingCallCommand`. Covers 1:1 ring-type calls, calls from phone numbers, and call-queue calls. |
+| `\{topicPrefix\}/incoming-call/caller` | JSON object | Who is calling while `incoming-call` is `"true"`: `scenario`, and where known `number`, `name`, `queue`, `contact` and `callId`, and a `timestamp` and `clientId`. Published just before `incoming-call` goes `"true"`, and again if Teams fills the details in while ringing. Not retained. Off unless `mqtt.incomingCallCaller.enabled` is `true`. |
 | `\{topicPrefix\}/screen-sharing` | `"true"` or `"false"` | Screen sharing active state |
 
-All topics use retained messages by default, ensuring subscribers receive the last known state immediately upon connecting.
+All topics except `incoming-call/caller` use retained messages, ensuring subscribers receive the last known state immediately upon connecting.
 
 **Connection State:** The `connected` topic uses MQTT Last Will and Testament (LWT). If the app crashes or loses network connectivity, the broker automatically publishes `"false"`, allowing home automation to detect and handle stale state.
 
@@ -708,8 +827,10 @@ All topics use retained messages by default, ensuring subscribers receive the la
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `disableGpu` | `boolean` | `false` | Disable GPU and hardware acceleration |
-| `electronCLIFlags` | `array` | `[]` | Electron CLI flags |
+| `performance.disableGpu` | `boolean` | `false` | Disable GPU and hardware acceleration |
+| `disableGpu` | `boolean` | `false` | Deprecated, use `performance.disableGpu` |
+| `performance.electronCLIFlags` | `array` | `[]` | Electron CLI flags |
+| `electronCLIFlags` | `array` | `[]` | Deprecated, use `performance.electronCLIFlags` |
 
 ### Wayland
 
@@ -742,18 +863,24 @@ Wayland display server settings are organized under the `wayland` configuration 
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `webDebug` | `boolean` | `false` | Enable debug at start |
+| `development.webDebug` | `boolean` | `false` | Enable debug at start |
+| `webDebug` | `boolean` | `false` | Deprecated, use `development.webDebug` |
 | `logConfig` | `object` | `{ transports: { console: { level: "info" }, file: { level: false } } }` | Electron-log configuration |
-| `watchConfigFile` | `boolean` | `false` | Watch for changes in config file and reload the app |
+| `development.watchConfigFile` | `boolean` | `false` | Watch for changes in config file and reload the app |
+| `watchConfigFile` | `boolean` | `false` | Deprecated, use `development.watchConfigFile` |
 
 ### Advanced Platform Options
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `chromeUserAgent` | `string` | `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36` | Google Chrome User Agent |
-| `emulateWinChromiumPlatform` | `boolean` | `false` | Use windows platform information in chromium (helpful if MFA app doesn't support Linux) |
-| `spellCheckerLanguages` | `array` | `[]` | Array of languages to use with Electron's spell checker |
-| `disableTimestampOnCopy` | `boolean` | `false` | Controls whether timestamps are included when copying messages |
+| `platform.chromeUserAgent` | `string` | `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/<version> Safari/537.36` | Google Chrome User Agent |
+| `chromeUserAgent` | `string` | `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/<version> Safari/537.36` | Deprecated, use `platform.chromeUserAgent` |
+| `platform.emulateWindowsChromium` | `boolean` | `false` | Use windows platform information in chromium (helpful if MFA app doesn't support Linux) |
+| `emulateWinChromiumPlatform` | `boolean` | `false` | Deprecated, use `platform.emulateWindowsChromium` |
+| `platform.spellCheckerLanguages` | `array` | `[]` | Array of languages to use with Electron's spell checker |
+| `spellCheckerLanguages` | `array` | `[]` | Deprecated, use `platform.spellCheckerLanguages` |
+| `platform.disableTimestampOnCopy` | `boolean` | `false` | Controls whether timestamps are included when copying messages |
+| `disableTimestampOnCopy` | `boolean` | `false` | Deprecated, use `platform.disableTimestampOnCopy` |
 
 :::note Wayland GPU Handling
 When running under Wayland, GPU acceleration is **automatically disabled by default** to prevent blank window issues. To enable GPU acceleration on Wayland, you can explicitly override this behavior using either:
@@ -761,7 +888,9 @@ When running under Wayland, GPU acceleration is **automatically disabled by defa
 **Configuration file** (`config.json`):
 ```json
 {
-  "disableGpu": false
+  "performance": {
+    "disableGpu": false
+  }
 }
 ```
 
@@ -800,16 +929,20 @@ When enabled, this flag:
 #### Minimal Configuration
 ```json
 {
-  "closeAppOnCross": true
+  "window": {
+    "closeOnCross": true
+  }
 }
 ```
 
 #### Dark Theme with Notifications Disabled
 ```json
 {
-  "customCSSName": "compactDark",
-  "disableNotifications": true,
-  "followSystemTheme": true
+  "appearance": {
+    "cssName": "compactDark",
+    "followSystemTheme": true
+  },
+  "disableNotifications": true
 }
 ```
 
@@ -820,12 +953,10 @@ When enabled, this flag:
     "intune": {
       "enabled": true,
       "user": "user@company.com"
-    },
-    "certificate": {
-      "path": "/path/to/cert.p12",
-      "password": "password"
     }
   },
+  "clientCertPath": "/path/to/cert.p12",
+  "clientCertPassword": "password",
   "proxyServer": "proxy.company.com:8080"
 }
 ```
@@ -890,6 +1021,8 @@ Teams for Linux supports system-wide configuration files for enterprise and mult
 
 > [!NOTE]
 > User configurations take precedence over system-wide configurations. This allows administrators to set organization-wide defaults while still allowing individual users to customize their settings.
+>
+> The files merge per setting: a user file that sets one field inside an object option such as `mqtt` or `network` keeps every other field from the system file and the built-in defaults. Lists such as `electronCLIFlags` are replaced, not combined.
 
 #### Example System-wide Config
 
@@ -897,14 +1030,18 @@ Create `/etc/teams-for-linux/config.json` to set organization-wide defaults:
 
 ```json
 {
-  "closeAppOnCross": false,
+  "window": {
+    "closeOnCross": false
+  },
   "disableNotifications": false,
   "screenSharing": {
     "thumbnail": {
       "enabled": true
     }
   },
-  "customCSSName": "compactDark",
+  "appearance": {
+    "cssName": "compactDark"
+  },
   "auth": {
     "intune": {
       "enabled": true
@@ -922,9 +1059,11 @@ The configuration file can include Electron CLI flags that will be added when th
 
 ```json
 {
-  "electronCLIFlags": [
-    "disable-software-rasterizer"
-  ]
+  "performance": {
+    "electronCLIFlags": [
+      "disable-software-rasterizer"
+    ]
+  }
 }
 ```
 
@@ -939,12 +1078,12 @@ The configuration file can include Electron CLI flags that will be added when th
 Teams for Linux automatically sets Chromium feature flags for optimal functionality. These defaults are applied only if you don't provide your own flags.
 
 **Default Settings:**
-- `--disable-features=HardwareMediaKeyHandling` - Prevents conflicts with Teams media controls
+- `--disable-features=HardwareMediaKeyHandling` - Prevents conflicts with Teams media controls. On Linux the default is `--disable-features=HardwareMediaKeyHandling,UsePortalAccentColor`, which also stops Electron from applying the XDG portal accent color (that can select a sandbox light GTK theme instead of the host theme).
 - `--enable-features=WebRTCPipeWireCapturer` - Enables PipeWire screen sharing (Wayland only)
 
 **Using Custom Feature Flags:**
 
-If you need custom feature flags, provide them when launching the app. The application respects your flags and will not override them.
+If you need custom feature flags, provide them when launching the app. The application respects your flags and will not override them. A `--disable-features` list you pass replaces the default entirely.
 
 ```bash
 # Example: Adding your own features on Wayland
@@ -952,11 +1091,15 @@ teams-for-linux --enable-features=MyCustomFeature,WebRTCPipeWireCapturer
 
 # Example: Disabling features
 teams-for-linux --disable-features=HardwareMediaKeyHandling,UnwantedFeature
+
+# Linux: your list replaces the default, so keep both required tokens
+teams-for-linux --disable-features=HardwareMediaKeyHandling,UsePortalAccentColor,UnwantedFeature
 ```
 
 > [!WARNING]
 > When providing custom flags, **you must include the required features** for proper functionality:
 > - **Always include:** `HardwareMediaKeyHandling` in `--disable-features`
+> - **On Linux:** Also include `UsePortalAccentColor` in `--disable-features`
 > - **On Wayland:** Also include `WebRTCPipeWireCapturer` in `--enable-features`
 >
 > Missing required features will trigger a warning but won't prevent the app from starting.
@@ -966,7 +1109,7 @@ teams-for-linux --disable-features=HardwareMediaKeyHandling,UnwantedFeature
 ```bash
 # Wayland users with custom needs
 teams-for-linux --enable-features=MyFeature,WebRTCPipeWireCapturer \
-                --disable-features=HardwareMediaKeyHandling,OtherFeature
+                --disable-features=HardwareMediaKeyHandling,UsePortalAccentColor,OtherFeature
 ```
 
 ### Incoming Call Command
@@ -975,8 +1118,10 @@ To use the incoming call command feature, a command or executable needs to be co
 
 ```json
 {
-  "incomingCallCommand": "/home/user/incomingCallScript.sh",
-  "incomingCallCommandArgs": ["-f", "1234"]
+  "incomingCalls": {
+    "command": "/home/user/incomingCallScript.sh",
+    "commandArgs": ["-f", "1234"]
+  }
 }
 ```
 

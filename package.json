@@ -1,6 +1,6 @@
 {
   "name": "teams-for-linux",
-  "version": "2.20.0",
+  "version": "2.27.0",
   "main": "app/index.js",
   "description": "Unofficial client for Microsoft Teams for Linux",
   "homepage": "https://github.com/IsmaelMartinez/teams-for-linux",
@@ -20,7 +20,7 @@
   "license": "GPL-3.0-or-later",
   "scripts": {
     "postinstall": "electron-builder install-app-deps",
-    "lint": "eslint --no-error-on-unmatched-pattern **/*.js",
+    "lint": "eslint .",
     "test:unit": "node --test 'tests/unit/*.test.js'",
     "test:e2e": "playwright test",
     "test:authenticated": "playwright test --config playwright.authenticated.config.js",
@@ -37,12 +37,11 @@
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
     "dist:linux": "electron-builder --linux",
-    "dist:linux:targz": "electron-builder --x64 --armv7l --arm64 -l tar.gz",
-    "dist:linux:deb": "electron-builder --x64 --armv7l --arm64 -l deb",
-    "dist:linux:rpm": "electron-builder --x64 --armv7l --arm64 -l rpm",
-    "dist:linux:appimage": "electron-builder --x64 --armv7l --arm64 -l AppImage",
+    "dist:linux:targz": "electron-builder --x64 --arm64 -l tar.gz",
+    "dist:linux:deb": "electron-builder --x64 --arm64 -l deb",
+    "dist:linux:rpm": "electron-builder --x64 --arm64 -l rpm",
+    "dist:linux:appimage": "electron-builder --x64 --arm64 -l AppImage",
     "dist:linux:snap": "electron-builder -l snap",
-    "dist:linux:snap:armv7l": "electron-builder --armv7l -l snap",
     "dist:linux:snap:arm64": "electron-builder --arm64 -l snap",
     "dist:mac": "electron-builder --mac --x64 --arm64 -c.mac.identity=-",
     "dist:mac:x64": "electron-builder --mac --x64",
@@ -50,7 +49,6 @@
     "dist:windows": "electron-builder --windows --x64",
     "dist:linux:x64": "electron-builder --x64 -l tar.gz deb rpm AppImage",
     "dist:linux:arm64": "electron-builder --arm64 -l tar.gz deb rpm AppImage",
-    "dist:linux:arm": "electron-builder --armv7l -l tar.gz deb rpm AppImage",
     "release": "electron-builder"
   },
   "dependencies": {
@@ -61,19 +59,19 @@
     "electron-store": "11.0.2",
     "electron-updater": "^6.8.9",
     "electron-window-state": "5.0.3",
-    "mqtt": "^5.15.2",
+    "mqtt": "^5.16.1",
     "unpdf": "^1.8.1",
-    "yargs": "^18.1.0",
+    "yargs": "^18.2.0",
     "zod": "^4.5.4"
   },
   "devDependencies": {
     "@electron/fuses": "^2.1.3",
     "@eslint/js": "^10.0.1",
-    "@playwright/test": "1.62.1",
-    "electron": "42.9.3",
+    "@playwright/test": "1.64.1",
+    "electron": "44.9.0",
     "electron-builder": "26.15.7",
-    "eslint": "^10.10.0",
-    "globals": "^17.12.0",
+    "eslint": "^10.13.0",
+    "globals": "^17.13.0",
     "http-server": "^14.1.1",
     "xml2js": "^0.6.2"
   },
@@ -82,6 +80,11 @@
   },
   "build": {
     "appId": "teams-for-linux",
+    "files": [
+      "app/**/*",
+      "!app/customBackground/example${/*}",
+      "LICENSE.md"
+    ],
     "asarUnpack": [
       "node_modules/spellchecker/vendor/hunspell_dictionaries"
     ],
@@ -144,6 +147,19 @@
       ]
     },
     "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0",
+        "libgbm1",
+        "libasound2t64 | libasound2"
+      ],
       "recommends": [
         "libappindicator3-1",
         "fido2-tools"

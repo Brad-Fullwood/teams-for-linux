@@ -82,6 +82,9 @@ class ProfileViewManager {
   #profilesManager;
   #config;
   #bindDisplayMediaHandler;
+  #bindWindowOpenHandler;
+  #onViewDidFinishLoad;
+  #setTitleOverride;
   #views = new Map();
   // Phase 2 foundation: webContents → profile attribution for main-process
   // IPC handlers (tray/badge/notification aggregation consumes this next).
@@ -90,8 +93,14 @@ class ProfileViewManager {
   // never depends on the WebContents still being reachable (a page can
   // destroy its own webContents, e.g. an auth flow calling window.close()).
   #viewMeta = new Map();
+  // profileId → Map<webContents.id, webContents> of live popups / webview
+  // guests spawned by that profile's view (recursively). Drained — and the
+  // windows closed — when the profile is removed, so no surface keeps running
+  // an account the user just deleted, and no id resolves to a gone profile.
+  #descendants = new Map();
   #handlers = null;
   #resizeHandler = null;
+  #focusHandler = null;
   #navigationHandler = null;
   #bootstrapInFlight = false;
   #initialized = false;
@@ -100,6 +109,8 @@ class ProfileViewManager {
   #chromeView = null;
   #chromeExpanded = false; // dropdown open (transient)
   #setExpandedHandler = null;
+  // Fired only when a view dies outside removal (removal has its own event).
+  #viewGoneListeners = new Set();
 
   /**
    * @param {Electron.BrowserWindow} window  Main app window
@@ -110,12 +121,37 @@ class ProfileViewManager {
    *   Binds the in-app screen-share picker to a session. Called for each
    *   profile view's partition session so multi-account screen-share
    *   matches Profile 0's behaviour (#2529).
+   * @param {(target: Electron.WebContents, loadTarget: Electron.WebContents, activate: () => void) => void} [bindWindowOpenHandler]
+   *   Installs the profile-view window-open policy on `target` (a profile
+   *   view or one of its descendants); Teams deep links load into
+   *   `loadTarget`, the originating profile view, and `activate` then makes
+   *   that profile the visible one. Profile views previously had no handler
+   *   at all; see mainAppWindow/profileWindowOpenPolicy.js.
+   * @param {(webContents: Electron.WebContents) => void} [onViewDidFinishLoad]
+   *   Called on every `did-finish-load` of each profile view, mirroring the
+   *   root window's listener. Main uses it to inject the screen-sharing
+   *   script, which otherwise only reaches Profile 0 (#2979).
+   * @param {(title: string|null) => void} [setTitleOverride]
+   *   Sets the window title from the active profile view's page title, or
+   *   hands it back to the root window (Profile 0) with null. Electron only
+   *   mirrors the root webContents' title onto the window (#3068).
    */
-  constructor(window, profilesManager, config, bindDisplayMediaHandler) {
+  constructor(
+    window,
+    profilesManager,
+    config,
+    bindDisplayMediaHandler,
+    bindWindowOpenHandler = () => {},
+    onViewDidFinishLoad = () => {},
+    setTitleOverride = () => {}
+  ) {
     this.#window = window;
     this.#profilesManager = profilesManager;
     this.#config = config;
     this.#bindDisplayMediaHandler = bindDisplayMediaHandler;
+    this.#bindWindowOpenHandler = bindWindowOpenHandler;
+    this.#onViewDidFinishLoad = onViewDidFinishLoad;
+    this.#setTitleOverride = setTitleOverride;
     this.#registry = new SenderProfileMap(profilesManager);
   }
 
@@ -123,8 +159,14 @@ class ProfileViewManager {
     if (this.#initialized) return;
     this.#initialized = true;
 
-    // The root window hosts Profile 0 (legacy partition).
+    // The root window hosts Profile 0 (legacy partition). Its popups and
+    // webview guests attribute to whatever Profile 0 is at lookup time.
     this.#registry.setRootWebContentsId(this.#window.webContents.id);
+    this.#watchDescendants(this.#window.webContents, {
+      root: true,
+      loadTarget: this.#window.webContents,
+      activate: () => this.#activate(this.#profilesManager.getLegacyProfile()?.id),
+    });
     // Seed the cached root profile id; afterwards the add/remove handlers
     // keep it current, so resolution never touches the settings store
     // (electron-store re-reads its JSON file on every access — too costly
@@ -147,6 +189,15 @@ class ProfileViewManager {
     this.#resizeHandler = () => this.#applyBoundsToAll();
     this.#window.on("resize", this.#resizeHandler);
 
+    // When the window regains focus (e.g. after a keyboard layout switch on
+    // X11), keyboard focus otherwise falls back to the root webContents,
+    // which is Profile 0, while another profile is shown (#3064). Leave it
+    // alone while the switcher dropdown is open: it closes on blur.
+    this.#focusHandler = () => {
+      if (!this.#chromeExpanded) this.#focusActive();
+    };
+    this.#window.on("focus", this.#focusHandler);
+
     // Only act on events from our own pill's webContents. Returns once the
     // bounds are applied so the renderer can await before revealing the
     // dropdown (avoids a first-open clip while the view is still pill-sized).
@@ -157,6 +208,11 @@ class ProfileViewManager {
       this.#chromeExpanded = !!expanded;
       this.#applyChromeBounds();
       this.#raiseChrome();
+      // A load while the dropdown was open skipped its focus (see
+      // #createView), so hand focus back to the active profile on close.
+      // Only while the window is focused, so a blur-driven close does not
+      // pull focus back into the app.
+      if (!this.#chromeExpanded && this.#window.isFocused()) this.#focusActive();
     };
     // Grow the view to full-window while the dropdown is open (so the scrim
     // covers the app and the dropdown isn't clipped), shrink back to the
@@ -214,6 +270,20 @@ class ProfileViewManager {
     // From here on, every #showActive re-raises it (adding a profile view
     // would otherwise paint over it).
     this.#createChromeView();
+  }
+
+  /** Return the live WebContents for the currently selected Teams profile. */
+  getActiveWebContents() {
+    const active = this.#profilesManager.getActive();
+    if (!active || active.partition === LEGACY_PARTITION) {
+      return this.#window?.webContents && !this.#window.webContents.isDestroyed()
+        ? this.#window.webContents
+        : null;
+    }
+    const view = this.#views.get(active.id);
+    const webContents = view?.webContents;
+    if (webContents && !webContents.isDestroyed()) return webContents;
+    return null;
   }
 
   /**
@@ -306,6 +376,10 @@ class ProfileViewManager {
       this.#window.removeListener("resize", this.#resizeHandler);
       this.#resizeHandler = null;
     }
+    if (this.#focusHandler) {
+      this.#window.removeListener("focus", this.#focusHandler);
+      this.#focusHandler = null;
+    }
     if (this.#navigationHandler) {
       this.#window.webContents.removeListener(
         "did-navigate",
@@ -329,6 +403,8 @@ class ProfileViewManager {
     }
     this.#registry.clear();
     this.#viewMeta.clear();
+    this.#descendants.clear();
+    this.#viewGoneListeners.clear();
     this.#initialized = false;
   }
 
@@ -336,18 +412,40 @@ class ProfileViewManager {
 
   /**
    * Resolve a webContents to the id of the profile that owns it: a profile
-   * view's id, or the root window's Profile 0. Returns null for any
-   * unattributed sender: the switcher pill, dialog windows, the root window
-   * while Profile 0 does not exist (pre-bootstrap, or after its removal) —
-   * and, for now, child windows / webview guests spawned by a profile view
-   * (see the KNOWN GAP note in senderProfileMap.js). Null means
-   * "unattributed", never "safe to ignore".
+   * view, the root window's Profile 0, or any popup / webview guest either
+   * of them spawned (tracked recursively). Returns null for unattributed
+   * senders: the switcher pill, dialog windows, and the root window or its
+   * descendants while Profile 0 does not exist (pre-bootstrap, or after its
+   * removal). Null means "unattributed", never "safe to ignore".
    * @param {Electron.WebContents} webContents
    * @returns {string|null}
    */
   resolveProfileId(webContents) {
     if (!webContents || typeof webContents.id !== "number") return null;
     return this.#registry.resolveProfileId(webContents.id);
+  }
+
+  /**
+   * Root window or a registered profile view — never a popup or webview
+   * guest: only the main Teams SPA's title carries the real unread count
+   * (a popup's scrapes to 0 and must not overwrite it).
+   * @param {Electron.IpcMainEvent|Electron.IpcMainInvokeEvent} event
+   */
+  isPrimaryProfileSurface(event) {
+    const senderId = event?.sender?.id;
+    if (typeof senderId !== "number") return false;
+    if (senderId === this.#window.webContents.id) return true;
+    // Live #views, not #viewMeta — meta is retained after a self-destroy
+    // and would keep a dead sender "primary".
+    for (const view of this.#views.values()) {
+      if (view.webContents?.id === senderId) return true;
+    }
+    return false;
+  }
+
+  /** A view died outside removal (removal has ProfilesManager's "remove"). */
+  onProfileViewGone(callback) {
+    this.#viewGoneListeners.add(callback);
   }
 
   /**
@@ -397,6 +495,7 @@ class ProfileViewManager {
     } else {
       this.#hideAllOverlays();
       this.#raiseChrome();
+      this.#setTitleOverride(null);
     }
     this.#pushSwitcherState();
   }
@@ -410,7 +509,11 @@ class ProfileViewManager {
         preload: path.join(__dirname, "..", "browser", "preload.js"),
         plugins: true,
         spellcheck: true,
-        webviewTag: true,
+        webviewTag: false,
+        // Every profile view stays attached (hidden while inactive, #3057),
+        // so a background profile's navigation must not take keyboard focus
+        // from the visible one. #showActive focuses the active view instead.
+        focusOnNavigation: false,
         // SECURITY: matches the root window's webPreferences
         // (browserWindowManager.js). Required for Teams DOM access via
         // ReactHandler; compensated by IPC validation.
@@ -424,6 +527,22 @@ class ProfileViewManager {
     // `setDisplayMediaRequestHandler` is per-session and the root window's
     // binding does not carry across to profile partitions (#2529).
     this.#bindDisplayMediaHandler(view.webContents.session);
+    this.#bindWindowOpenHandler(view.webContents, view.webContents, () =>
+      this.#activate(profileId)
+    );
+    // The root window injects the screen-sharing script on every
+    // did-finish-load of its own webContents; profile views need the same,
+    // or a share from a second profile runs with Teams' raw constraints
+    // (audio kept, no preview relay) (#2979).
+    view.webContents.on("did-finish-load", () =>
+      this.#onViewDidFinishLoad(view.webContents)
+    );
+    // Only the active profile's title reaches the window (#3068).
+    view.webContents.on("page-title-updated", (_event, title) => {
+      if (this.#profilesManager.getActive()?.id === profileId) {
+        this.#setTitleOverride(title);
+      }
+    });
 
     const wcId = view.webContents.id;
     const profileId = profile.id;
@@ -438,15 +557,147 @@ class ProfileViewManager {
     // and a later remove must clear the partition's storage (ADR-020 remove
     // contract) even though the view is gone.
     view.webContents.once("destroyed", () => {
-      this.#views.delete(profileId);
+      // Every view stays attached (#3057), so detach the dead one too.
+      try {
+        this.#window.contentView.removeChildView(view);
+      } catch {
+        // Window already gone; nothing to detach from.
+      }
+      // On the removal path #destroyView has already dropped the view from
+      // #views before close() — the delete returns false and the listeners
+      // stay silent (removal is observable via ProfilesManager's "remove").
+      // Only a SELF-destroyed view (still tracked here) notifies.
+      const wasTracked = this.#views.delete(profileId);
       this.#registry.unregister(wcId);
+      this.#teardownDescendants(profileId);
+      // Profile 0 now shows through, so hand the title back to it (#3068).
+      if (this.#profilesManager.getActive()?.id === profileId) {
+        this.#setTitleOverride(null);
+      }
+      if (!wasTracked) return;
+      for (const callback of this.#viewGoneListeners) {
+        try {
+          callback(profileId);
+        } catch (error) {
+          console.warn("[ProfileViewManager] view-gone listener failed", {
+            message: error.message,
+          });
+        }
+      }
+    });
+    // Attribute anything this view spawns to its profile. A popup genuinely
+    // shares the view's partition and preload (window.open inherits them from
+    // the opener); a <webview> guest has its own, but it lives inside this
+    // profile's surface, so its IPC still belongs to this profile.
+    this.#watchDescendants(view.webContents, {
+      profileId,
+      loadTarget: view.webContents,
+      activate: () => this.#activate(profileId),
     });
     this.#applyBounds(view);
+
+    // Attach now and keep attached, hidden until shown. On Linux, a view
+    // that loads Teams while detached and is attached later paints but never
+    // receives input (Electron 42.11+/43, reproduced under Xvfb with real
+    // X11 input); toggling visibility on an attached view does not hit it
+    // (#3057). Re-raise the pill so the new view does not cover it.
+    view.setVisible(false);
+    this.#window.contentView.addChildView(view);
+    this.#raiseChrome();
+    // focusOnNavigation is off, so give the active profile focus once its
+    // page has loaded (startup, reloads), unless the switcher dropdown is
+    // open: it closes on blur.
+    view.webContents.on("did-finish-load", () => {
+      if (
+        !this.#chromeExpanded &&
+        this.#profilesManager.getActive()?.id === profileId
+      ) {
+        view.webContents.focus();
+      }
+    });
 
     const url = profile.url || this.#config.url;
     view.webContents.loadURL(url, {
       userAgent: this.#config.chromeUserAgent,
     });
+  }
+
+  // Make `profileId` the visible profile (no-op if it already is, or if it
+  // no longer exists). Used when a deep link loads into a profile view that
+  // may currently be in the background.
+  #activate(profileId) {
+    if (!profileId) return;
+    if (this.#profilesManager.getActive()?.id === profileId) return;
+    try {
+      this.#profilesManager.switch(profileId);
+    } catch (error) {
+      console.warn("[ProfileViewManager] activate after deep link failed", {
+        message: error.message,
+      });
+    }
+  }
+
+  // Listen for popups and webview guests spawned by `webContents` and
+  // attribute them to the same owner. `owner` is { profileId } for a profile
+  // view or { root: true } for the root window (Profile 0, whose id is
+  // mutable so descendants resolve through the map's root profile id).
+  #watchDescendants(webContents, owner) {
+    webContents.on("did-create-window", (child) =>
+      this.#trackDescendant(child?.webContents, owner)
+    );
+    webContents.on("did-attach-webview", (_event, guest) =>
+      this.#trackDescendant(guest, owner)
+    );
+  }
+
+  // Attribute a child window / webview guest to its owner for its lifetime,
+  // give it the same window-open policy (deep links still load into the
+  // ORIGINATING view, not the popup), and recurse so grandchildren are
+  // covered — `setWindowOpenHandler` and these events are per-webContents,
+  // not inherited. Id captured up front — same reasoning as the view itself.
+  #trackDescendant(webContents, owner) {
+    if (!webContents || typeof webContents.id !== "number") return;
+    const id = webContents.id;
+    if (owner.root) {
+      this.#registry.registerRootDescendant(id);
+      webContents.once("destroyed", () =>
+        this.#registry.unregisterRootDescendant(id)
+      );
+    } else {
+      this.#registry.register(id, owner.profileId);
+      let siblings = this.#descendants.get(owner.profileId);
+      if (!siblings) {
+        siblings = new Map();
+        this.#descendants.set(owner.profileId, siblings);
+      }
+      siblings.set(id, webContents);
+      webContents.once("destroyed", () => {
+        this.#registry.unregister(id);
+        this.#descendants.get(owner.profileId)?.delete(id);
+      });
+    }
+    this.#bindWindowOpenHandler(webContents, owner.loadTarget, owner.activate);
+    this.#watchDescendants(webContents, owner);
+  }
+
+  // Remove a profile's descendants from attribution and close any that are
+  // still alive: a popup left running after its profile is removed would keep
+  // an authenticated surface for a deleted account (and its partition is
+  // about to be cleared underneath it).
+  #teardownDescendants(profileId) {
+    const siblings = this.#descendants.get(profileId);
+    if (!siblings) return;
+    this.#descendants.delete(profileId);
+    for (const [id, wc] of siblings) {
+      this.#registry.unregister(id);
+      if (wc && !wc.isDestroyed?.()) {
+        try {
+          wc.close();
+        } catch {
+          // Already going away; ignore.
+        }
+      }
+    }
   }
 
   #destroyView(profileId) {
@@ -459,6 +710,7 @@ class ProfileViewManager {
     this.#viewMeta.delete(profileId);
     if (!view && !meta) return;
     if (meta) this.#registry.unregister(meta.wcId);
+    this.#teardownDescendants(profileId);
 
     if (view) {
       try {
@@ -498,6 +750,8 @@ class ProfileViewManager {
       // stays put (it's not in #views) and is re-raised below.
       this.#hideAllOverlays();
       this.#raiseChrome();
+      this.#window.webContents.focus();
+      this.#setTitleOverride(null);
       return;
     }
     this.#hideAllOverlays();
@@ -508,22 +762,33 @@ class ProfileViewManager {
         { profileId: profile.id }
       );
       this.#raiseChrome();
+      this.#setTitleOverride(null);
       return;
     }
     this.#applyBounds(view);
+    view.setVisible(true);
+    // addChildView on an already attached view only moves it to the top.
     this.#window.contentView.addChildView(view);
-    // Adding the profile view puts it on top; re-raise the pill so it stays
-    // above the active content.
+    // Re-raise the pill so it stays above the active content.
     this.#raiseChrome();
+    view.webContents.focus();
+    this.#setTitleOverride(view.webContents.getTitle());
   }
 
+  #focusActive() {
+    const active = this.#profilesManager.getActive();
+    if (!active) return;
+    const wc =
+      active.partition === LEGACY_PARTITION
+        ? this.#window.webContents
+        : this.#views.get(active.id)?.webContents;
+    if (wc && !wc.isDestroyed()) wc.focus();
+  }
+
+  // Hide rather than detach: see #createView (#3057).
   #hideAllOverlays() {
     for (const view of this.#views.values()) {
-      try {
-        this.#window.contentView.removeChildView(view);
-      } catch {
-        // Already detached; ignore.
-      }
+      view.setVisible(false);
     }
   }
 

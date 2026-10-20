@@ -208,6 +208,7 @@ function registerMailTools(server, graph) {
     if (!content.success) return toolResult(content, () => '');
     if (!Buffer.isBuffer(content.data)) return fileError('Download did not return file bytes.');
     if (content.data.length > MAX_DOWNLOAD_BYTES) return fileError('Attachment too large to save (limit 25 MB).');
+    // eslint-disable-next-line no-control-regex -- stripping control characters from the file name is the point
     const name = String(meta.data?.name ?? 'attachment').replaceAll(/[\\/:*?"<>|\x00-\x1f]/g, '_').replace(/[. ]+$/, '') || 'attachment';
     try {
       const dir = saveDir ? path.resolve(saveDir) : fs.mkdtempSync(path.join(os.tmpdir(), 'o365-download-'));

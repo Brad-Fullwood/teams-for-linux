@@ -10,6 +10,11 @@ let _ConnectionManager_isRefreshing = new WeakMap();
 let _ConnectionManager_refreshTimeout = new WeakMap();
 let _ConnectionManager_boundRefresh = new WeakMap();
 let _ConnectionManager_boundDidFailLoad = new WeakMap();
+// Set by a main-frame network failure; cleared when refresh() attempts a load.
+// While unset, a page that is already loaded is left alone: Teams keeps
+// working from its local cache when the network drops, and a suspend/resume
+// no longer replaces a healthy page with a blank one (#2611).
+let _ConnectionManager_needsReload = new WeakMap();
 
 class ConnectionManager {
   get window() {
@@ -34,6 +39,7 @@ class ConnectionManager {
     _ConnectionManager_currentUrl.set(this, url || this.config.url);
     _ConnectionManager_isRefreshing.set(this, false);
     _ConnectionManager_refreshTimeout.set(this, null);
+    _ConnectionManager_needsReload.set(this, false);
 
     // Bind methods to preserve 'this' context
     const boundRefresh = this.debouncedRefresh.bind(this);
@@ -88,7 +94,9 @@ class ConnectionManager {
     return this.window && !this.window.isDestroyed();
   }
 
-  async refresh() {
+  // `force` is for an explicit user reload (menu, Ctrl+R): it bypasses the
+  // healthy-page check below.
+  async refresh(force = false) {
     if (!this.isWindowAvailable()) {
       console.warn("Window is not available. Cannot refresh.");
       return;
@@ -106,8 +114,15 @@ class ConnectionManager {
 
       const currentUrl = this.window?.webContents?.getURL() || "";
       const hasUrl = currentUrl?.startsWith("https://");
+      if (hasUrl && !force && !_ConnectionManager_needsReload.get(this)) {
+        console.debug("[CONNECTION] Page is loaded and healthy, skipping reload");
+        return;
+      }
       this.window?.setTitle("Waiting for network...");
       console.debug("Waiting for network...");
+      // Timed so a "network never came up" wait is visible at info/error level.
+      const waitStartedAt = Date.now();
+      const waitedSeconds = () => ((Date.now() - waitStartedAt) / 1000).toFixed(1);
       const connected = await this.isOnline();
 
       // Re-check window availability after async isOnline() call,
@@ -117,32 +132,41 @@ class ConnectionManager {
         return;
       }
 
-      if (connected) {
-        if (hasUrl) {
-          console.debug("Reloading current page...");
-          try {
-            this.window.reload();
-          } catch (err) {
-            console.error(`[CONNECTION] Failed to reload page: ${err.message}`);
-            this.debouncedRefresh();
-          }
-        } else {
-          console.debug("Loading initial URL...");
-          try {
-            await this.window.loadURL(this.currentUrl, {
-              userAgent: this.config.chromeUserAgent,
-            });
-          } catch (err) {
-            console.error(`[CONNECTION] Failed to load URL: ${err.message}`);
-            this.debouncedRefresh();
-          }
-        }
-      } else {
+      if (!connected) {
+        // needsReload is left as it was, so a later resume or retry still
+        // reloads a page that failed.
         this.window?.setTitle("No internet connection");
-        console.error("No internet connection");
+        console.error(`[CONNECTION] No internet connection after ${waitedSeconds()}s`);
+        return;
       }
+
+      _ConnectionManager_needsReload.set(this, false);
+      await this.load(hasUrl);
     } finally {
       _ConnectionManager_isRefreshing.set(this, false);
+    }
+  }
+
+  async load(hasUrl) {
+    // Timed so the default log shows how long Teams took to load on a slow link.
+    const startedAt = Date.now();
+    const elapsedSeconds = () => ((Date.now() - startedAt) / 1000).toFixed(1);
+    try {
+      if (hasUrl) {
+        console.debug("Reloading current page...");
+        this.window.reload();
+      } else {
+        console.info("[CONNECTION] Loading initial URL...");
+        await this.window.loadURL(this.currentUrl, {
+          userAgent: this.config.chromeUserAgent,
+        });
+        // Navigation time only — lazy chunks can still be loading after this.
+        console.info(`[CONNECTION] Teams navigation finished in ${elapsedSeconds()}s`);
+      }
+    } catch (err) {
+      console.error(`[CONNECTION] Failed to load page after ${elapsedSeconds()}s: ${err.message}`);
+      _ConnectionManager_needsReload.set(this, true);
+      this.debouncedRefresh();
     }
   }
 
@@ -227,6 +251,7 @@ function assignOnDidFailLoadEventHandler(cm) {
       console.error(`[CONNECTION] Main frame failed to load: ${description} (code: ${code})`);
       if (RECOVERABLE_NETWORK_ERRORS.has(description)) {
         console.debug(`Network error detected: ${description}, scheduling debounced refresh...`);
+        _ConnectionManager_needsReload.set(cm, true);
         cm.debouncedRefresh();
       }
     } else {

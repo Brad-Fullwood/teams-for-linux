@@ -142,6 +142,7 @@ function registerFileTools(server, graph) {
     if (!Buffer.isBuffer(content.data)) return fileError('Download did not return file bytes.');
     if (content.data.length > MAX_DOWNLOAD_BYTES) return fileError('File too large to save (limit 25 MB).');
     if (typeof meta.size === 'number' && content.data.length !== meta.size) return fileError('Download size changed or is incomplete; retry the download.');
+    // eslint-disable-next-line no-control-regex -- stripping control characters from the file name is the point
     const name = String(meta.name ?? 'download').replaceAll(/[\\/:*?"<>|\x00-\x1f]/g, '_').replace(/[. ]+$/, '') || 'download';
     try {
       const dir = saveDir ? path.resolve(saveDir) : fs.mkdtempSync(path.join(os.tmpdir(), 'o365-download-'));
