@@ -1,8 +1,8 @@
 ---
-id: 032-mcp-server
+id: 033-mcp-server
 ---
 
-# ADR 032: Local Read-Only MCP Server
+# ADR 033: Local Read-Only MCP Server
 
 ## Status
 

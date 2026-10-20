@@ -1,8 +1,8 @@
 ---
-id: 033-gated-send-service
+id: 034-gated-send-service
 ---
 
-# ADR 033: Gated Send Service
+# ADR 034: Gated Send Service
 
 ## Status
 
@@ -10,7 +10,7 @@ id: 033-gated-send-service
 
 ## Context
 
-The MCP server ([ADR 032](032-mcp-server.md)) is read-only. An assistant built on it drafts Teams
+The MCP server ([ADR 033](033-mcp-server.md)) is read-only. An assistant built on it drafts Teams
 messages and mail replies, and the user copies each one into Teams or Outlook to send it. The user
 decided on 2026-10-13 that sending is allowed when every message is a draft he edits in his own panel
 and nothing goes out until he clicks Send and confirms.

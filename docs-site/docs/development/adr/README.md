@@ -54,8 +54,8 @@ Architecture Decision Records capture important architectural decisions along wi
 | [030](030-graph-api-teams-session-token.md) | Graph API Access via the Teams Session Token | ✅ Implemented | 2025-11-21 | v2.6.17 |
 | [031](031-ozone-platform-x11-default.md) | Keep the `--ozone-platform=x11` Default on Wayland | ✅ Accepted | 2026-09-05 | N/A |
 | [032](032-secondary-window-for-calls.md) | Opt-in Secondary Window for the Same Account During Calls | 🚧 Proposed | 2026-09-18 | N/A |
-| [032](032-mcp-server.md) | Local Read-Only MCP Server | ✅ Accepted | 2026-09-08 | N/A |
-| [033](033-gated-send-service.md) | Gated Send Service (fork only) | ✅ Accepted | 2026-10-13 | N/A |
+| [033](033-mcp-server.md) | Local Read-Only MCP Server | ✅ Accepted | 2026-09-08 | N/A |
+| [034](034-gated-send-service.md) | Gated Send Service (fork only) | ✅ Accepted | 2026-10-13 | N/A |
 
 **Legend:**
 - ✅ **Implemented** - Decision accepted and code in production

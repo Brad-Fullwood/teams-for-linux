@@ -6,7 +6,7 @@ with an approval token minted by a companion app when the user presses Send. It 
 in this fork. The MCP server (`app/mcp/`) and the chat service client (`app/chatService/`) stay
 read-only, and tests check that neither loads this module.
 
-Decision record: [ADR 033](../../docs-site/docs/development/adr/033-gated-send-service.md).
+Decision record: [ADR 034](../../docs-site/docs/development/adr/034-gated-send-service.md).
 
 ## When it runs
 

@@ -3,7 +3,7 @@
 Read-only clients for the Teams conversation data the MCP server (`app/mcp/`) exposes: chats,
 channels, messages, inline images and meeting transcripts. Both clients reuse the signed-in Teams
 session and issue `GET` requests only. See
-[ADR-032](../../docs-site/docs/development/adr/032-mcp-server.md) for why conversations come from the
+[ADR-033](../../docs-site/docs/development/adr/033-mcp-server.md) for why conversations come from the
 chat service instead of Graph.
 
 ## Files
