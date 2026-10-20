@@ -534,6 +534,10 @@ Media settings are organized under the `media` configuration object with subgrou
 | `media.camera.resolution.mode` | `string` | `"remove"` | Resolution mode: `"remove"` removes Teams' constraints allowing native camera resolution, `"override"` sets specific width/height |
 | `media.camera.resolution.width` | `number` | - | Target width when mode is `"override"` |
 | `media.camera.resolution.height` | `number` | - | Target height when mode is `"override"` |
+| `media.camera.sender.enabled` | `boolean` | `false` | Raise the resolution and bitrate cap Teams sets on the outgoing camera video. Teams caps the active `RTCRtpSender` encoding at 1280x720. This rewrites every active encoding to the values below. Screen sharing is not changed |
+| `media.camera.sender.maxWidth` | `number` | `1920` | Maximum outgoing camera width in pixels |
+| `media.camera.sender.maxHeight` | `number` | `1080` | Maximum outgoing camera height in pixels |
+| `media.camera.sender.maxBitrate` | `number` | `8000000` | Maximum outgoing camera bitrate in bits per second |
 | `media.camera.autoAdjustAspectRatio.enabled` | `boolean` | `false` | Fixes camera video stretching when moving Teams between monitors with different orientations by reapplying proper aspect ratio constraints |
 | `media.video.menuEnabled` | `boolean` | `false` | Enable menu entry for controlling video elements (PiP mode, video controls) |
 

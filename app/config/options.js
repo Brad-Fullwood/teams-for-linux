@@ -696,6 +696,12 @@ module.exports = {
           },
           camera: {
             resolution: { enabled: false, mode: "remove" },
+            sender: {
+              enabled: false,
+              maxWidth: 1920,
+              maxHeight: 1080,
+              maxBitrate: 8000000,
+            },
             autoAdjustAspectRatio: { enabled: false },
           },
           video: { menuEnabled: false },
@@ -769,6 +775,23 @@ module.exports = {
           "camera.resolution.height": {
             type: "number",
             describe: "Target camera height when mode is override.",
+          },
+          "camera.sender.enabled": {
+            type: "boolean",
+            describe:
+              "Raise the resolution and bitrate cap Teams sets on the outgoing camera video (RTCRtpSender encodings).",
+          },
+          "camera.sender.maxWidth": {
+            type: "number",
+            describe: "Maximum outgoing camera width in pixels.",
+          },
+          "camera.sender.maxHeight": {
+            type: "number",
+            describe: "Maximum outgoing camera height in pixels.",
+          },
+          "camera.sender.maxBitrate": {
+            type: "number",
+            describe: "Maximum outgoing camera bitrate in bits per second.",
           },
           "camera.autoAdjustAspectRatio.enabled": {
             type: "boolean",

@@ -753,6 +753,12 @@
             "enabled": false,
             "mode": "remove"
           },
+          "sender": {
+            "enabled": false,
+            "maxWidth": 1920,
+            "maxHeight": 1080,
+            "maxBitrate": 8000000
+          },
           "autoAdjustAspectRatio": {
             "enabled": false
           }
@@ -841,6 +847,30 @@
           "path": "camera.resolution.height",
           "type": "number",
           "description": "Target camera height when mode is override."
+        },
+        {
+          "path": "camera.sender.enabled",
+          "type": "boolean",
+          "default": false,
+          "description": "Raise the resolution and bitrate cap Teams sets on the outgoing camera video (RTCRtpSender encodings)."
+        },
+        {
+          "path": "camera.sender.maxWidth",
+          "type": "number",
+          "default": 1920,
+          "description": "Maximum outgoing camera width in pixels."
+        },
+        {
+          "path": "camera.sender.maxHeight",
+          "type": "number",
+          "default": 1080,
+          "description": "Maximum outgoing camera height in pixels."
+        },
+        {
+          "path": "camera.sender.maxBitrate",
+          "type": "number",
+          "default": 8000000,
+          "description": "Maximum outgoing camera bitrate in bits per second."
         },
         {
           "path": "camera.autoAdjustAspectRatio.enabled",
