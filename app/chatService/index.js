@@ -232,8 +232,8 @@ class ChatServiceClient {
     let url;
     try { url = new URL(sourceUrl); } catch { return { success: false, error: 'Invalid image URL' }; }
     if (url.protocol !== 'https:' || url.username || url.password || url.port ||
-        !/^(?:[a-z0-9-]+\.)*asm\.skype\.com$/i.test(url.hostname) || !url.pathname.startsWith('/v1/objects/')) {
-      return { success: false, error: 'Only Teams inline image URLs on asm.skype.com are supported' };
+        !/^(?:[a-z0-9-]+\.)*(?:asm\.skype\.com|asyncgw\.teams\.microsoft\.com)$/i.test(url.hostname) || !url.pathname.startsWith('/v1/objects/')) {
+      return { success: false, error: 'Only Teams inline image URLs on asm.skype.com or asyncgw.teams.microsoft.com are supported' };
     }
     if (!this.enabled) return { success: false, error: 'Graph API is disabled' };
     const session = await this.acquireSession();

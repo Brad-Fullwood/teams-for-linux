@@ -15,11 +15,14 @@ test('media client limits credential use to Teams image hosts and returns origin
   const calls = [];
   globalThis.fetch = async (url, init) => { calls.push({ url, init }); return new Response(Buffer.from([137, 80, 78, 71]), { headers: { 'content-type': 'image/png' } }); };
   try {
-    for (const url of ['https://evil.example/v1/objects/x', 'https://asm.skype.com.evil.example/v1/objects/x', 'https://user@asm.skype.com/v1/objects/x', 'http://asm.skype.com/v1/objects/x', 'https://asm.skype.com/private']) assert.equal((await client.getImage(url)).success, false);
+    for (const url of ['https://evil.example/v1/objects/x', 'https://asm.skype.com.evil.example/v1/objects/x', 'https://user@asm.skype.com/v1/objects/x', 'http://asm.skype.com/v1/objects/x', 'https://asm.skype.com/private', 'https://evil-asyncgw.teams.microsoft.com.attacker.com/v1/objects/x', 'https://asyncgw.teams.microsoft.com.evil.com/v1/objects/x', 'http://uk-prod.asyncgw.teams.microsoft.com/v1/objects/x']) assert.equal((await client.getImage(url)).success, false);
     assert.equal(calls.length, 0);
     const result = await client.getImage('https://eu.asm.skype.com/v1/objects/x/views/imgpsh_fullsize');
     assert.equal(result.success, true);
     assert.deepEqual(result.data, Buffer.from([137, 80, 78, 71]));
+    assert.equal((await client.getImage('https://uk-prod.asyncgw.teams.microsoft.com/v1/objects/x/views/imgo')).success, true);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].init.headers.Authorization, calls[0].init.headers.Authorization);
     assert.equal(calls[0].init.redirect, 'error');
     assert.equal(calls[0].init.method, 'GET');
   } finally { globalThis.fetch = original; }
