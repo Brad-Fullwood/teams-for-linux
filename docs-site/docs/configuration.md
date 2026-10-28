@@ -634,10 +634,12 @@ Media settings are organized under the `media` configuration object with subgrou
 | `media.camera.resolution.mode` | `string` | `"remove"` | Resolution mode: `"remove"` removes Teams' constraints allowing native camera resolution, `"override"` sets specific width/height |
 | `media.camera.resolution.width` | `number` | - | Target width when mode is `"override"` |
 | `media.camera.resolution.height` | `number` | - | Target height when mode is `"override"` |
-| `media.camera.sender.enabled` | `boolean` | `false` | Raise the resolution and bitrate cap Teams sets on the outgoing camera video. Teams caps the active `RTCRtpSender` encoding at 1280x720. This rewrites every active encoding to the values below. Screen sharing is not changed |
+| `media.camera.sender.enabled` | `boolean` | `false` | Raise the resolution, bitrate and frame rate cap Teams sets on the outgoing camera video. Teams caps the main `RTCRtpSender` encoding at 1280x720 or lower. This rewrites the main layer to the values below: the only encoding in a 1:1 call, the active encoding after the first with the largest cap in a meeting. The first meeting encoding, a 320x180 thumbnail, keeps Teams' values. Screen sharing is not changed |
 | `media.camera.sender.maxWidth` | `number` | `1920` | Maximum outgoing camera width in pixels |
 | `media.camera.sender.maxHeight` | `number` | `1080` | Maximum outgoing camera height in pixels |
 | `media.camera.sender.maxBitrate` | `number` | `8000000` | Maximum outgoing camera bitrate in bits per second |
+| `media.camera.sender.maxFramerate` | `number` | `30` | Frame rate cap of the main layer. A higher value Teams set is kept |
+| `media.camera.sender.liftFromHeight` | `number` | `720` | Smallest height Teams must have set on the main layer for it to be lifted. `0` lifts it at any size, so receivers showing a small tile also get the full resolution |
 | `media.camera.sender.remoteBandwidthKbps` | `number` | `0` | Rewrite the `b=AS` bandwidth line in the remote SDP to this many kbps (0 leaves it as sent by the service). The Teams service sends `b=AS:3920`, which caps the outgoing bandwidth estimate at 3.92 Mbps. `b=TIAS` lines are set to the same value in bps |
 | `media.camera.autoAdjustAspectRatio.enabled` | `boolean` | `false` | Fixes camera video stretching when moving Teams between monitors with different orientations by reapplying proper aspect ratio constraints |
 | `media.video.menuEnabled` | `boolean` | `false` | Enable menu entry for controlling video elements (PiP mode, video controls) |
