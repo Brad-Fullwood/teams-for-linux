@@ -639,7 +639,7 @@ Media settings are organized under the `media` configuration object with subgrou
 | `media.camera.sender.maxHeight` | `number` | `1080` | Maximum outgoing camera height in pixels |
 | `media.camera.sender.maxBitrate` | `number` | `8000000` | Maximum outgoing camera bitrate in bits per second |
 | `media.camera.sender.maxFramerate` | `number` | `30` | Frame rate cap of the main layer. A higher value Teams set is kept |
-| `media.camera.sender.liftFromHeight` | `number` | `720` | Smallest height Teams must have set on the main layer for it to be lifted. `0` lifts it at any size, so receivers showing a small tile also get the full resolution |
+| `media.camera.sender.liftFromHeight` | `number` | `720` | Smallest height Teams must have set on the main layer for it to be lifted. Leave it at `720`: a lower value lifts the 640x360 thumbnail of a meeting with three or more people, Teams then never starts the main layer and a participant who pins you sees no video (tested 2026-10-28) |
 | `media.camera.sender.remoteBandwidthKbps` | `number` | `0` | Rewrite the `b=AS` bandwidth line in the remote SDP to this many kbps (0 leaves it as sent by the service). The Teams service sends `b=AS:3920`, which caps the outgoing bandwidth estimate at 3.92 Mbps. `b=TIAS` lines are set to the same value in bps |
 | `media.camera.autoAdjustAspectRatio.enabled` | `boolean` | `false` | Fixes camera video stretching when moving Teams between monitors with different orientations by reapplying proper aspect ratio constraints |
 | `media.video.menuEnabled` | `boolean` | `false` | Enable menu entry for controlling video elements (PiP mode, video controls) |
