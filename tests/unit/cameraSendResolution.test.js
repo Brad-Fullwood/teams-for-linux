@@ -55,6 +55,12 @@ describe('cameraSendResolution, default liftFromHeight 720', () => {
 		assert.deepStrictEqual(set([THUMB, MAIN_720, UNUSED]), [THUMB, lifted(MAIN_720), UNUSED]);
 	});
 
+	it('lifts rid 1 when it is the only active layer at 720p (two people in a meeting)', () => {
+		const solo = { ...MAIN_720, rid: '1' };
+		const off = { ...UNUSED, rid: '2' };
+		assert.deepStrictEqual(set([solo, off, UNUSED]), [lifted(solo), off, UNUSED]);
+	});
+
 	it('leaves a 540p main layer alone', () => {
 		assert.deepStrictEqual(set([THUMB, MAIN_540, UNUSED]), [THUMB, MAIN_540, UNUSED]);
 	});

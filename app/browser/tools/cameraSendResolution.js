@@ -11,15 +11,18 @@
  * rewrites the main layer to the configured maximum size, bitrate and frame
  * rate.
  *
- * In meetings Teams sends simulcast: rid 1 is a 320x180 thumbnail at
- * 133 kbps that every receiver gets, rid 2 is the main layer that Teams sets
- * to 720p, 540p or 180p from what the receivers show, rid 3 is unused. The
- * main layer is the active encoding after the first with the largest cap.
- * The first encoding (the thumbnail) keeps Teams' values. Lifting the
- * thumbnail as well (every active layer, the rule until 2026-10-27) put two
- * 1080p layers under the service's 3.9 Mbps cap: libwebrtc fed the thumbnail
- * first, the main layer encoded nothing, and the other participants saw a
- * white tile. With one encoding (1:1 calls) that encoding is the main layer.
+ * Teams sends three simulcast encodings. With two people in a meeting only
+ * rid 1 is active and it is the main layer, capped at 720p. With more people
+ * rid 1 is a 320x180 thumbnail at 133 kbps that every receiver gets and rid 2
+ * is the main layer, which Teams sets to 720p, 540p or 180p from what the
+ * receivers show. rid 3 is unused. The main layer is the active encoding with
+ * the largest cap, the later one on a tie. The first encoding at thumbnail
+ * size (180p or less) is never lifted, so a meeting where only the thumbnail
+ * is active sends Teams' values. Lifting the thumbnail as well (every active
+ * layer, the rule until 2026-10-27) put two 1080p layers under the service's
+ * 3.9 Mbps cap: libwebrtc fed the thumbnail first, the main layer encoded
+ * nothing, and the other participants saw a white tile. With one encoding
+ * (1:1 calls) that encoding is the main layer.
  *
  * liftFromHeight (default 720) is the smallest cap Teams must have set on the
  * main layer for it to be lifted. 0 lifts it whatever size Teams asked for,
@@ -42,6 +45,7 @@ const DEFAULT_MAX_BITRATE = 8000000;
 
 const DEFAULT_MAX_FRAMERATE = 30;
 const DEFAULT_LIFT_FROM_HEIGHT = 720;
+const THUMBNAIL_HEIGHT = 180;
 
 const INACTIVE_DOWN_TO = { maxWidth: 640, maxHeight: 360 };
 
@@ -72,12 +76,12 @@ const applyCameraSendResolutionPatch = function (senderConfig) {
     return Infinity;
   }
 
-  // Index of the main layer to lift, or -1. With several encodings the first
-  // is the thumbnail and is never lifted; a tie goes to the later encoding.
+  // Index of the main layer to lift, or -1: the active encoding with the
+  // largest cap, the later one on a tie. The first of several encodings at
+  // thumbnail size is the meeting thumbnail and is not lifted.
   function mainLayerIndex(encodings) {
-    const first = encodings.length > 1 ? 1 : 0;
     let best = -1;
-    for (let i = first; i < encodings.length; i++) {
+    for (let i = 0; i < encodings.length; i++) {
       const enc = encodings[i];
       if (enc.active === false) {
         continue;
@@ -89,7 +93,11 @@ const applyCameraSendResolutionPatch = function (senderConfig) {
     if (best === -1 || layerHeight(encodings[best]) < liftFromHeight) {
       return -1;
     }
-    return best;
+    const isThumbnail =
+      best === 0 &&
+      encodings.length > 1 &&
+      layerHeight(encodings[0]) <= THUMBNAIL_HEIGHT;
+    return isThumbnail ? -1 : best;
   }
 
   // scaleResolutionDownTo for a layer that is not lifted, when the lifted
