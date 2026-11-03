@@ -140,7 +140,9 @@ function formatTranscript(entries, maxChars = 60000) {
     const speaker = e.speakerDisplayName || 'Unknown';
     const text = String(e.text ?? '').trim();
     if (!text) continue;
-    if (current && current.speaker === speaker) {
+    // Entries without a speaker name stay separate, so a recording with no speaker
+    // attribution keeps its timestamps instead of becoming one long turn.
+    if (current && current.speaker === speaker && e.speakerDisplayName) {
       current.text += ` ${text}`;
       continue;
     }
@@ -151,7 +153,9 @@ function formatTranscript(entries, maxChars = 60000) {
   for (const l of lines) {
     const line = `[${l.at}] ${l.speaker}: ${l.text}\n`;
     if (out.length + line.length > maxChars) {
-      out += `… (truncated at ${maxChars} chars; ${lines.length} turns in total)`;
+      // Keep the part of the overflowing turn that fits, so one long turn still returns text.
+      out += line.slice(0, Math.max(0, maxChars - out.length));
+      out += `\n… (truncated at ${maxChars} chars; ${lines.length} turns in total)`;
       break;
     }
     out += line;

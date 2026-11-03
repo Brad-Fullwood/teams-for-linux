@@ -80,6 +80,15 @@ describe('transcripts', () => {
 	it('truncates at maxChars with a note', () => {
 		const text = formatTranscript([{ speakerDisplayName: 'A', text: 'x'.repeat(2000), startOffset: '0' }], 1000);
 		assert.match(text, /truncated at 1000 chars; 1 turns/);
+		assert.ok(text.startsWith('[0] A: xxx'), 'keeps the part of the turn that fits');
+	});
+
+	it('keeps entries without a speaker name as separate timed lines', () => {
+		const text = formatTranscript([
+			{ text: 'First.', startOffset: '00:00:02.1' },
+			{ text: 'Second.', startOffset: '00:00:09.0' },
+		]);
+		assert.strictEqual(text, '[00:00:02] Unknown: First.\n[00:00:09] Unknown: Second.');
 	});
 
 	it('finds de-duplicated recording links across message pages', async () => {
