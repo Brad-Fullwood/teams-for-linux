@@ -484,14 +484,21 @@ function registerTeamsTools(server, chat, graph, transcripts) {
   if (transcripts) {
     server.registerTool('teams_get_meeting_transcript', {
       title: 'Get meeting transcript',
-      description: 'Transcript of a recorded meeting, as "[time] Speaker: text". Give the meeting chat id (kind meeting in teams_list_chats). If the meeting was recorded more than once, the first call lists the recordings and you pick one with recordingIndex. Only works for meetings that were recorded; transcript-only meetings leave no link in the chat.',
+      description: 'Transcript of a recorded meeting, as "[time] Speaker: text". Give the meeting chat id (kind meeting in teams_list_chats), or the SharePoint or OneDrive URL of the recording file (from files_search) for meetings whose chat you are not in. If the meeting was recorded more than once, the first call lists the recordings and you pick one with recordingIndex. Only works for meetings that were recorded; transcript-only meetings leave no link in the chat.',
       inputSchema: {
-        chatId: z.string(),
+        chatId: z.string().optional(),
+        url: z.string().url().optional().describe('Recording file URL, used instead of chatId'),
         recordingIndex: z.number().int().min(0).default(0).describe('Which recording, newest first'),
         maxChars: z.number().int().min(1000).max(400_000).default(60_000),
       },
-    }, async ({ chatId, recordingIndex, maxChars }) => {
-      const found = await transcripts.findRecordings(chatId);
+    }, async ({ chatId, url, recordingIndex, maxChars }) => {
+      if (!chatId === !url) {
+        return { isError: true, content: [{ type: 'text', text: 'Give exactly one of chatId or url.' }] };
+      }
+      // A recording file URL goes straight to the same drive item lookup the chat path uses.
+      const found = url
+        ? { success: true, data: [{ url, title: decodeURIComponent(new URL(url).pathname.split('/').pop() || 'Recording'), when: null }] }
+        : await transcripts.findRecordings(chatId);
       if (!found.success) return toolResult(found, () => '');
       const recordings = found.data;
       if (recordings.length === 0) {
