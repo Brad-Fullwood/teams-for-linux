@@ -437,6 +437,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       { name: "cameraResolution", path: "./tools/cameraResolution" },
       { name: "cameraAspectRatio", path: "./tools/cameraAspectRatio" },
       { name: "cameraSendResolution", path: "./tools/cameraSendResolution" },
+      { name: "callingSettings", path: "./tools/callingSettings" },
       { name: "navigationButtons", path: "./tools/navigationButtons" },
       { name: "framelessTweaks", path: "./tools/frameless" },
       { name: "customStickers", path: "./tools/customStickers" },

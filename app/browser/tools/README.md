@@ -61,6 +61,27 @@ Omitting a key means "do not touch that constraint" — users who only want to d
 
 **Use Case**: Podcasters, streamers, and anyone routing hardware audio effects (vocoder voice effects, sound-pad effects from a RØDECaster Duo / Stream Deck) into meetings where WebRTC APM would otherwise gate them as non-speech noise.
 
+#### [callingSettings.js](callingSettings.js)
+Merges settings over the configuration of the Teams web calling stack, through the same console override hook that Teams' own devtools API uses. The overrides apply to calls started after Teams has loaded.
+
+With Teams' defaults the web client tells the service it sends at most 1280x720. This configuration makes it offer and send 1920x1080:
+
+```json
+{
+  "media": {
+    "callingSettings": {
+      "webrtcVideoCapabilityMaxFS": 8160,
+      "webrtcCameraOpenFs": 8160,
+      "hardwareEncodedVideoMaxFS": 8160,
+      "sendVideoCapabilityManager": { "defaultFS": 8160 },
+      "video1080p": { "software": { "isEnabled": true } }
+    }
+  }
+}
+```
+
+The values are frame sizes in 16x16 macroblocks (3600 is 1280x720, 8160 is 1920x1080). Pair it with `media.camera.resolution` in `override` mode at 1920x1080 so the camera opens at that size. Leave `media.camera.sender` off: it raises the encoder size without telling the service, and the service then stops forwarding the video.
+
 #### [cameraResolution.js](cameraResolution.js)
 Removes or overrides video resolution constraints that Microsoft Teams sets when accessing the camera. By default, Teams requests 720p which may not be the native or preferred resolution of the camera.
 

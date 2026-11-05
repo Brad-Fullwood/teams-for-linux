@@ -825,6 +825,7 @@
         "video": {
           "menuEnabled": false
         },
+        "callingSettings": {},
         "showStatusOnDockIcon": false,
         "macPerformanceMode": true,
         "preventDeviceSwitching": false,
@@ -937,6 +938,12 @@
           "type": "number",
           "default": 0,
           "description": "Rewrite the b=AS bandwidth line in the remote SDP to this many kbps (0 leaves it as sent by the service)."
+        },
+        {
+          "path": "callingSettings",
+          "type": "object",
+          "default": {},
+          "description": "Settings merged over the Teams web calling stack configuration through its console override hook, for calls started after Teams has loaded. Empty leaves Teams' values. For 1080p outgoing camera video: { webrtcVideoCapabilityMaxFS: 8160, webrtcCameraOpenFs: 8160, hardwareEncodedVideoMaxFS: 8160, sendVideoCapabilityManager: { defaultFS: 8160 }, video1080p: { software: { isEnabled: true } } }."
         },
         {
           "path": "camera.autoAdjustAspectRatio.enabled",
