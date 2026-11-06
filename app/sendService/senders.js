@@ -12,6 +12,7 @@ const MAIL_ID = /^[A-Za-z0-9+/=_-]{16,512}$/;
 const GRAPH_MESSAGES_URL = 'https://graph.microsoft.com/v1.0/me/messages';
 // Graph takes a fileAttachment of up to 3 MB in one POST. Larger files need an upload session.
 const MAX_DRAFT_ATTACHMENT_BYTES = 3 * 1024 * 1024;
+const MAX_DRAFT_TOTAL_BYTES = 10 * 1024 * 1024;
 const CONTENT_TYPES = {
   '.pdf': 'application/pdf',
   '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -44,7 +45,7 @@ const scopesOf = (token) => new Set(String(jwtClaims(token).scp || '').split(' '
  */
 function checkTarget(tool, target, to = [], cc = []) {
   if (tool === 'mail_create_draft') {
-    return parseRecipients(to).invalid ? { status: 400, error: 'invalid recipient' } : null;
+    return parseRecipients(to).invalid || parseRecipients(cc).invalid ? { status: 400, error: 'invalid recipient' } : null;
   }
   if (tool === 'teams_send_message') {
     if (/@thread\.tacv2|;messageid=/i.test(target)) return { status: 400, error: 'channel threads are not supported' };
@@ -184,15 +185,17 @@ async function sendMailReply(deps, { target, body, to, cc }) {
 }
 
 /**
- * Create a draft in the Drafts folder with one file attachment. It does not send: it uses only the Graph
- * token, which carries Mail.ReadWrite and no Mail.Send, and calls only POST /me/messages and
- * POST /me/messages/{id}/attachments. The Outlook token, which can send, is not used.
+ * Create a draft in the Drafts folder with cc and any number of file attachments. It does not send: it uses
+ * only the Graph token, which carries Mail.ReadWrite and no Mail.Send, and calls only POST /me/messages and
+ * POST /me/messages/{id}/attachments (one per file, in order). The Outlook token, which can send, is not used.
  * @param {{graphApiClient: object}} deps
- * @param {{to: string[], subject: string, body: string, attachment: {name: string, bytes: Buffer}}} request
+ * @param {{to: string[], cc?: string[], subject: string, body: string, attachments?: {name: string, bytes: Buffer}[]}} request
  * @returns {Promise<{status: number, id?: string, webLink?: string, error?: string}>}
  */
-async function createMailDraft(deps, { to, subject, body, attachment }) {
-  if (attachment.bytes.length > MAX_DRAFT_ATTACHMENT_BYTES) return { status: 400, error: 'attachment is over 3 MB' };
+async function createMailDraft(deps, { to, cc = [], subject, body, attachments = [] }) {
+  const overSize = attachments.findIndex((a) => a.bytes.length > MAX_DRAFT_ATTACHMENT_BYTES);
+  if (overSize >= 0) return { status: 400, error: `attachment ${overSize + 1} is over 3 MB` };
+  if (attachments.reduce((sum, a) => sum + a.bytes.length, 0) > MAX_DRAFT_TOTAL_BYTES) return { status: 400, error: 'attachments total over 10 MB' };
   const graphToken = await deps.graphApiClient.acquireToken();
   if (!graphToken?.success || !graphToken.token) return { status: 502, error: `no Graph token (${graphToken?.error || 'unknown'})` };
   if (!scopesOf(graphToken.token).has('Mail.ReadWrite')) return { status: 501, error: 'draft not available: the Graph token has no Mail.ReadWrite' };
@@ -207,6 +210,7 @@ async function createMailDraft(deps, { to, subject, body, attachment }) {
       subject,
       body: { contentType: 'HTML', content: textToHtml(body) },
       toRecipients: parseRecipients(to).recipients.map(recipient),
+      ccRecipients: parseRecipients(cc).recipients.map(recipient),
     });
     const data = await readJson(response);
     if (!response.ok) return upstreamError('Graph', response.status, data);
@@ -216,17 +220,19 @@ async function createMailDraft(deps, { to, subject, body, attachment }) {
     return networkError(error);
   }
 
-  const failed = (detail) => ({ status: 502, error: `draft ${draft.id} created without its attachment: ${detail}` });
-  try {
-    const response = await post(`${GRAPH_MESSAGES_URL}/${encodeURIComponent(draft.id)}/attachments`, {
-      '@odata.type': '#microsoft.graph.fileAttachment',
-      name: attachment.name,
-      contentType: CONTENT_TYPES[path.extname(attachment.name).toLowerCase()] || 'application/octet-stream',
-      contentBytes: attachment.bytes.toString('base64'),
-    });
-    if (!response.ok) return failed(upstreamError('Graph', response.status, await readJson(response)).error);
-  } catch (error) {
-    return failed(networkError(error).error);
+  for (const [index, attachment] of attachments.entries()) {
+    const failed = (detail) => ({ status: 502, error: `draft ${draft.id} created with ${index} of ${attachments.length} attachments: ${detail}` });
+    try {
+      const response = await post(`${GRAPH_MESSAGES_URL}/${encodeURIComponent(draft.id)}/attachments`, {
+        '@odata.type': '#microsoft.graph.fileAttachment',
+        name: attachment.name,
+        contentType: CONTENT_TYPES[path.extname(attachment.name).toLowerCase()] || 'application/octet-stream',
+        contentBytes: attachment.bytes.toString('base64'),
+      });
+      if (!response.ok) return failed(upstreamError('Graph', response.status, await readJson(response)).error);
+    } catch (error) {
+      return failed(networkError(error).error);
+    }
   }
   return { status: 200, id: draft.id, webLink: draft.webLink };
 }

@@ -3,7 +3,7 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const logger = require('electron-log');
-const { TOOLS, ATTACHMENT_ROOTS, NonceStore, RateLimiter, checkShape, checkApproval, readAttachment } = require('./gate');
+const { TOOLS, ATTACHMENT_ROOTS, NonceStore, RateLimiter, checkShape, checkApproval, readAttachments } = require('./gate');
 const { checkTarget, sendTeamsMessage, sendMailReply, createMailDraft, OutlookTokenSource } = require('./senders');
 
 const DEFAULT_SECRET_PATH = path.join(os.homedir(), '.config', 'work-assistant', 'send-secret');
@@ -154,20 +154,21 @@ class SendService {
     if (shape) return shape;
     const target = checkTarget(request.tool, request.target, request.to, request.cc);
     if (target) return target;
-    // The file is read once here: the HMAC covers these bytes and the draft gets the same bytes.
-    let attachment = null;
+    // The files are read once here: the HMAC covers these bytes and the draft gets the same bytes.
+    let attachments = [];
     if (request.tool === 'mail_create_draft') {
-      attachment = readAttachment(request.attachment_path, this.#attachmentRoots);
-      if (attachment.error) return attachment;
+      const read = readAttachments(request.attachment_paths ?? [], this.#attachmentRoots);
+      if (read.error) return read;
+      attachments = read.attachments;
     }
     const nowMs = this.#now();
-    const approval = checkApproval(this.#secret, request, this.#nonces, Math.floor(nowMs / 1000), { attachmentSha256: attachment?.sha256 });
+    const approval = checkApproval(this.#secret, request, this.#nonces, Math.floor(nowMs / 1000), { attachmentSha256s: attachments.map((a) => a.sha256) });
     if (approval) return approval;
     if (!this.#rate.take(nowMs)) return { status: 429, error: 'send limit reached (10 an hour)' };
     try {
       if (request.tool === 'mail_create_draft') {
-        const { to, subject, body } = request;
-        return await this.#senders.draft({ to, subject, body, attachment: { name: attachment.name, bytes: attachment.bytes } });
+        const { to, cc = [], subject, body } = request;
+        return await this.#senders.draft({ to, cc, subject, body, attachments: attachments.map(({ name, bytes }) => ({ name, bytes })) });
       }
       return request.tool === 'teams_send_message' ? await this.#senders.teams(request) : await this.#senders.mail(request);
     } catch (error) {

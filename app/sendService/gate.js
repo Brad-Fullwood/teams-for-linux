@@ -8,6 +8,8 @@ const WORK_ASSISTANT = path.join(os.homedir(), 'Projects', 'Personal', 'work-ass
 /** mail_create_draft attaches files from these folders only, compared after symlinks are resolved. */
 const ATTACHMENT_ROOTS = [path.join(WORK_ASSISTANT, 'attachments'), path.join(WORK_ASSISTANT, 'tmp')];
 const MAX_ATTACHMENT_BYTES = 3 * 1024 * 1024;
+const MAX_ATTACHMENTS_TOTAL_BYTES = 10 * 1024 * 1024;
+const MAX_ATTACHMENTS = 10;
 const MAX_AHEAD_SECONDS = 10 * 60;
 const SENDS_PER_HOUR = 10;
 const HOUR_MS = 60 * 60 * 1000;
@@ -17,12 +19,14 @@ const sha256Hex = (data) => createHash('sha256').update(data, typeof data === 's
 /**
  * The text the approval HMAC signs.
  * Sends: tool \n target \n sha256hex(body) \n expiry \n nonce.
- * mail_create_draft: tool \n sha256hex(to joined by \n) \n sha256hex(subject) \n sha256hex(body)
- * \n sha256hex(attachment bytes) \n expiry \n nonce.
+ * mail_create_draft: tool \n sha256hex(to joined by \n) \n sha256hex(cc joined by \n) \n sha256hex(subject)
+ * \n sha256hex(body) \n count of attachments \n sha256hex(bytes) of each attachment in request order
+ * (no lines when there are none) \n expiry \n nonce.
  */
-function approvalMessage({ tool, target, body, to, subject, attachmentSha256, expiry, nonce }) {
+function approvalMessage({ tool, target, body, to, cc, subject, attachmentSha256s, expiry, nonce }) {
   if (tool === 'mail_create_draft') {
-    return [tool, sha256Hex((to ?? []).join('\n')), sha256Hex(subject ?? ''), sha256Hex(body), attachmentSha256 ?? '', String(expiry), nonce].join('\n');
+    const hashes = attachmentSha256s ?? [];
+    return [tool, sha256Hex((to ?? []).join('\n')), sha256Hex((cc ?? []).join('\n')), sha256Hex(subject ?? ''), sha256Hex(body), String(hashes.length), ...hashes, String(expiry), nonce].join('\n');
   }
   return [tool, target, sha256Hex(body), String(expiry), nonce].join('\n');
 }
@@ -33,11 +37,11 @@ function approvalToken(secret, fields) {
 }
 
 /**
- * @param {object} [server] - Values the service computed itself. attachmentSha256 replaces any value in the request.
+ * @param {object} [server] - Values the service computed itself. attachmentSha256s replaces any value in the request.
  */
-function tokenMatches(secret, request, { attachmentSha256 } = {}) {
+function tokenMatches(secret, request, { attachmentSha256s } = {}) {
   if (typeof request.token !== 'string' || !/^[0-9a-f]{64}$/.test(request.token)) return false;
-  const expected = Buffer.from(approvalToken(secret, { ...request, attachmentSha256 }), 'hex');
+  const expected = Buffer.from(approvalToken(secret, { ...request, attachmentSha256s }), 'hex');
   return timingSafeEqual(expected, Buffer.from(request.token, 'hex'));
 }
 
@@ -85,7 +89,7 @@ const isUnder = (file, root) => file.startsWith(root.endsWith(path.sep) ? root :
  * @returns {{path: string, size: number} | {status: number, error: string}}
  */
 function resolveAttachment(attachmentPath, roots = ATTACHMENT_ROOTS) {
-  if (typeof attachmentPath !== 'string' || !path.isAbsolute(attachmentPath)) return { status: 400, error: 'attachment_path must be an absolute path' };
+  if (typeof attachmentPath !== 'string' || !path.isAbsolute(attachmentPath)) return { status: 400, error: 'attachment must be an absolute path' };
   let real;
   try {
     real = fs.realpathSync(attachmentPath);
@@ -106,17 +110,27 @@ function resolveAttachment(attachmentPath, roots = ATTACHMENT_ROOTS) {
 }
 
 /**
- * Resolve and read an attachment, refusing files over 3 MB.
- * @returns {{name: string, bytes: Buffer, sha256: string} | {status: number, error: string}}
+ * Resolve and read the attachments in request order, refusing a file over 3 MB or a total over 10 MB.
+ * @returns {{attachments: {name: string, bytes: Buffer, sha256: string}[]} | {status: number, error: string}}
  */
-function readAttachment(attachmentPath, roots = ATTACHMENT_ROOTS) {
-  const resolved = resolveAttachment(attachmentPath, roots);
-  if (resolved.error) return resolved;
-  if (resolved.size > MAX_ATTACHMENT_BYTES) return { status: 400, error: 'attachment is over 3 MB' };
-  const bytes = fs.readFileSync(resolved.path);
-  if (bytes.length > MAX_ATTACHMENT_BYTES) return { status: 400, error: 'attachment is over 3 MB' };
-  return { name: path.basename(resolved.path), bytes, sha256: sha256Hex(bytes) };
+function readAttachments(attachmentPaths, roots = ATTACHMENT_ROOTS) {
+  const attachments = [];
+  let total = 0;
+  for (const [index, attachmentPath] of attachmentPaths.entries()) {
+    const resolved = resolveAttachment(attachmentPath, roots);
+    if (resolved.error) return numbered(resolved, index);
+    if (resolved.size > MAX_ATTACHMENT_BYTES) return { status: 400, error: `attachment ${index + 1} is over 3 MB` };
+    const bytes = fs.readFileSync(resolved.path);
+    if (bytes.length > MAX_ATTACHMENT_BYTES) return { status: 400, error: `attachment ${index + 1} is over 3 MB` };
+    total += bytes.length;
+    if (total > MAX_ATTACHMENTS_TOTAL_BYTES) return { status: 400, error: 'attachments total over 10 MB' };
+    attachments.push({ name: path.basename(resolved.path), bytes, sha256: sha256Hex(bytes) });
+  }
+  return { attachments };
 }
+
+/** Name the attachment in a resolveAttachment error: "attachment is ..." becomes "attachment 2 is ...". */
+const numbered = ({ status, error }, index) => ({ status, error: error.replace(/^attachment /, `attachment ${index + 1} `) });
 
 /**
  * Shape and content checks that need no secret.
@@ -136,21 +150,30 @@ function checkShape(request, { attachmentRoots = ATTACHMENT_ROOTS } = {}) {
   return null;
 }
 
-function checkDraftShape({ to, cc, subject, body, attachment_path: attachmentPath, expiry, nonce }, attachmentRoots) {
+function checkDraftShape({ to, cc, subject, body, attachment_path: oldPath, attachment_paths: attachmentPaths = [], expiry, nonce }, attachmentRoots) {
+  if (oldPath !== undefined) return { status: 400, error: 'use attachment_paths' };
   if (!Array.isArray(to) || to.length === 0 || !to.every((v) => typeof v === 'string')) return { status: 400, error: 'draft needs to as a list of one or more addresses' };
-  if (to.some((v) => /[\r\n]/.test(v))) return { status: 400, error: 'invalid recipient' };
-  if (cc !== undefined && !(Array.isArray(cc) && cc.length === 0)) return { status: 400, error: 'draft does not take cc' };
+  if (cc !== undefined && !(Array.isArray(cc) && cc.every((v) => typeof v === 'string'))) return { status: 400, error: 'cc must be a list of strings' };
+  if ([...to, ...(cc ?? [])].some((v) => /[\r\n]/.test(v))) return { status: 400, error: 'invalid recipient' };
   if (typeof subject !== 'string' || !subject.trim()) return { status: 400, error: 'subject is empty' };
   if (typeof body !== 'string' || !body.trim()) return { status: 400, error: 'body is empty' };
   if (!Number.isInteger(expiry)) return { status: 400, error: 'expiry must be an integer' };
   if (typeof nonce !== 'string' || !/^[0-9a-f]{16}$/.test(nonce)) return { status: 400, error: 'nonce must be 16 hex characters' };
-  const attachment = resolveAttachment(attachmentPath, attachmentRoots);
-  return attachment.error ? attachment : null;
+  if (!Array.isArray(attachmentPaths)) return { status: 400, error: 'attachment_paths must be a list' };
+  if (attachmentPaths.length > MAX_ATTACHMENTS) return { status: 400, error: 'at most 10 attachments' };
+  let total = 0;
+  for (const [index, attachmentPath] of attachmentPaths.entries()) {
+    const attachment = resolveAttachment(attachmentPath, attachmentRoots);
+    if (attachment.error) return numbered(attachment, index);
+    if (attachment.size > MAX_ATTACHMENT_BYTES) return { status: 400, error: `attachment ${index + 1} is over 3 MB` };
+    total += attachment.size;
+  }
+  return total > MAX_ATTACHMENTS_TOTAL_BYTES ? { status: 400, error: 'attachments total over 10 MB' } : null;
 }
 
 /**
  * Approval checks. Consumes the nonce when everything else passes.
- * @param {object} [server] - { attachmentSha256 } computed by the service from the file it will attach
+ * @param {object} [server] - { attachmentSha256s } computed by the service from the files it will attach
  * @returns {{status: number, error: string} | null} null when approved
  */
 function checkApproval(secret, request, nonces, nowSeconds, server = {}) {
@@ -162,6 +185,6 @@ function checkApproval(secret, request, nonces, nowSeconds, server = {}) {
 }
 
 module.exports = {
-  TOOLS, SENDS_PER_HOUR, ATTACHMENT_ROOTS, MAX_ATTACHMENT_BYTES, sha256Hex, approvalMessage, approvalToken, tokenMatches,
-  NonceStore, RateLimiter, resolveAttachment, readAttachment, checkShape, checkApproval,
+  TOOLS, SENDS_PER_HOUR, ATTACHMENT_ROOTS, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_TOTAL_BYTES, MAX_ATTACHMENTS, sha256Hex, approvalMessage, approvalToken, tokenMatches,
+  NonceStore, RateLimiter, resolveAttachment, readAttachments, checkShape, checkApproval,
 };

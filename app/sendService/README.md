@@ -1,7 +1,7 @@
 # Send service
 
 A local HTTP endpoint that sends one Teams chat message or one Outlook mail reply, or creates one
-Outlook draft with an attachment, per request, and only
+Outlook draft with cc and attachments, per request, and only
 with an approval token minted by a companion app when the user presses Send. It is the one write path
 in this fork. The MCP server (`app/mcp/`) and the chat service client (`app/chatService/`) stay
 read-only, and tests check that neither loads this module.
@@ -55,16 +55,20 @@ for single line breaks.
 
 ## Drafts
 
-`mail_create_draft` takes `to` (one or more), `subject`, `body` and `attachment_path` instead of
-`target`, `cc`. The path must resolve, symlinks followed, to a file of 3 MB or less under
-`~/Projects/Personal/work-assistant/attachments/` or `tmp/` (`ATTACHMENT_ROOTS` in `gate.js`). The token
-signs `tool`, `sha256hex(to joined by "\n")`, `sha256hex(subject)`, `sha256hex(body)`,
-`sha256hex(attachment bytes)`, `expiry` and `nonce`, joined by `"\n"`. The service hashes the bytes it
-uploads, so a file changed after approval fails with 403.
+`mail_create_draft` takes `to` (one or more), `cc` (optional), `subject`, `body` and `attachment_paths`
+(optional, up to 10) instead of `target`. Each path must resolve, symlinks followed, to a file of 3 MB or
+less under `~/Projects/Personal/work-assistant/attachments/` or `tmp/` (`ATTACHMENT_ROOTS` in `gate.js`),
+and the files total 10 MB at most. The old `attachment_path` field is refused with 400
+`use attachment_paths`. The token signs these lines joined by `"\n"`: `tool`, `sha256hex(to joined by "\n")`,
+`sha256hex(cc joined by "\n")`, `sha256hex(subject)`, `sha256hex(body)`, the attachment count, then
+`sha256hex(bytes)` of each attachment in request order, `expiry` and `nonce`. The service hashes the bytes
+it uploads, so a file changed after approval, or files in another order, fail with 403.
 
-`createMailDraft` uses only the Graph token (`Mail.ReadWrite`, no `Mail.Send`): `POST /me/messages`, then
-`POST /me/messages/{id}/attachments` with a `#microsoft.graph.fileAttachment`. It returns `id` and
-`webLink`, and never calls a send endpoint or the Outlook token.
+`createMailDraft` uses only the Graph token (`Mail.ReadWrite`, no `Mail.Send`): `POST /me/messages` with
+`toRecipients` and `ccRecipients`, then one `POST /me/messages/{id}/attachments` per file in order, each a
+`#microsoft.graph.fileAttachment`. If attachment k fails the answer is 502
+`draft <id> created with <k-1> of <n> attachments: ...`. It returns `id` and `webLink`, and never calls a
+send endpoint or the Outlook token.
 
 ## Logging
 

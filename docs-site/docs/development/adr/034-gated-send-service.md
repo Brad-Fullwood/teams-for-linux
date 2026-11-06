@@ -54,3 +54,10 @@ A separate module, `app/sendService/`, on its own listener (`127.0.0.1:3041`, pa
 - A chat service POST from the main process is new ground for this fork. Upstream recorded a 201 that
   did not reach the recipient on a different send path (ADR 015). The first live test reads the message
   back.
+
+## Amendment 2026-11-06: draft cc and several attachments
+
+`mail_create_draft` takes `cc` and `attachment_paths` (0 to 10 files, 3 MB each, 10 MB in total) in place
+of `attachment_path`, which is refused with 400. The token now also signs `sha256hex(cc)`, the attachment
+count and the hash of each file in request order. The draft is still created through the Graph token only,
+with one attachment POST per file. The contract is in `docs/send.md` of the O365-MCP repo.
